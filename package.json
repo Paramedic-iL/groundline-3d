@@ -1,0 +1,1 @@
+{"name":"groundline","private":true,"type":"module","scripts":{"test":"node verify.mjs && node verify-characters.mjs","start":"node serve.mjs"}}
