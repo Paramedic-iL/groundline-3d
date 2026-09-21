@@ -2,7 +2,7 @@ const N=16384;
 export function tileXY(lat,lon){return {x:(lon+180)/360*N,y:(1-Math.asinh(Math.tan(lat*Math.PI/180))/Math.PI)/2*N};}
 export function decode(r,g,b){return r*256+g+b/256-32768;}
 export const FLAT={height:()=>0,base:0,real:false,range:0,label:'Flat terrain fallback — no elevation data'};
-const bundled=new Set(['9789/6668','8290/6119','8291/6119','9774/6649']);
+const bundled=new Set(['9789/6668','9774/6649']);
 export async function loadTerrain(lat,lon){
  const cos=Math.cos(lat*Math.PI/180),r=245,top=tileXY(lat+r/111320,lon-r/(111320*cos)),bottom=tileXY(lat-r/111320,lon+r/(111320*cos));
  const tiles=new Map();

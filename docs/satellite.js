@@ -1,7 +1,7 @@
 import {tileXY} from './terrain.js';
 import * as T from './three.module.js';
 
-const LOCAL=new Set(['9789/6668','9774/6649','8290/6119','8291/6119']);
+const LOCAL=new Set(['9789/6668','9774/6649']);
 const YEARS=[2025,2024,2023,2020];
 const MATRICES=['g','GoogleMapsCompatible'];
 export const GROUND_METERS=480;
@@ -104,25 +104,34 @@ export function composeGroundTexture(coverage,sizeMeters=GROUND_METERS){
  return texture;
 }
 
-export function coverageFromPhoto(image,lat,lon,photoMeters=PHOTO_METERS,groundMeters=GROUND_METERS){
+export function coverageFromPhoto(image,lat,lon,photoMeters=PHOTO_METERS,groundMeters=GROUND_METERS,align={}){
+ return drapePhotoOnCoverage({center:lat!=null&&lon!=null?tileXY(lat,lon):{x:0,y:0},mpp:photoMeters/Math.max(1,image.width||256),span:groundMeters,sourceSize:groundMeters,tiles:[],ready:true,year:null},image,photoMeters,align,groundMeters);
+}
+export function drapePhotoOnCoverage(coverage,image,photoMeters=PHOTO_METERS,align={},groundMeters=GROUND_METERS){
  const canvas=document.createElement('canvas');
  canvas.width=canvas.height=GROUND_TEXELS;
  const ctx=canvas.getContext('2d',{alpha:false,colorSpace:'srgb'});
  ctx.imageSmoothingEnabled=true;ctx.imageSmoothingQuality='high';
- ctx.fillStyle='#6d7a68';ctx.fillRect(0,0,GROUND_TEXELS,GROUND_TEXELS);
- const dim=GROUND_TEXELS*(photoMeters/groundMeters);
- try{ctx.drawImage(image,(GROUND_TEXELS-dim)/2,(GROUND_TEXELS-dim)/2,dim,dim);}catch{/* closed bitmap */}
+ const base=coverage?.texture?.image;
+ if(base)try{ctx.drawImage(base,0,0,GROUND_TEXELS,GROUND_TEXELS);}catch{ctx.fillStyle='#6d7a68';ctx.fillRect(0,0,GROUND_TEXELS,GROUND_TEXELS);}
+ else{ctx.fillStyle='#6d7a68';ctx.fillRect(0,0,GROUND_TEXELS,GROUND_TEXELS);}
+ const scale=align.scale||1,dim=GROUND_TEXELS*(photoMeters*scale/groundMeters);
+ const cx=GROUND_TEXELS/2+(align.dx||0)/groundMeters*GROUND_TEXELS;
+ const cy=GROUND_TEXELS/2+(align.dz||0)/groundMeters*GROUND_TEXELS;
+ ctx.save();ctx.translate(cx,cy);if(align.yaw)ctx.rotate(align.yaw);ctx.globalAlpha=base?.85:1;
+ try{ctx.drawImage(image,-dim/2,-dim/2,dim,dim);}catch{/* closed bitmap */}
+ ctx.restore();
  const texture=new T.CanvasTexture(canvas);
  texture.colorSpace=T.SRGBColorSpace;texture.anisotropy=8;texture.generateMipmaps=true;
  texture.minFilter=T.LinearMipmapLinearFilter;texture.magFilter=T.LinearFilter;texture.needsUpdate=true;
  const mpp=photoMeters/Math.max(1,image.width||256);
  return {
-  photo:true,photoImage:image,photoMeters,groundMeters,
-  tiles:[{image,x:0,y:0,photo:true}],
-  center:lat!=null&&lon!=null?tileXY(lat,lon):{x:0,y:0},
-  mpp,span:groundMeters,sourceSize:groundMeters,
-  ready:true,texture,draped:true,year:null,
-  label:`Aerial photo · ~${mpp.toFixed(2)} m/pixel · draped`
+  ...coverage,
+  photo:true,photoImage:image,photoMeters,groundMeters,align,
+  tiles:coverage?.tiles?.length?coverage.tiles:[{image,x:0,y:0,photo:true}],
+  texture,draped:true,ready:true,span:groundMeters,sourceSize:groundMeters,
+  mpp:coverage?.mpp||mpp,
+  label:`Aerial photo aligned to map · ~${photoMeters.toFixed(0)} m`
  };
 }
 
@@ -148,7 +157,7 @@ export class SatelliteMap{
  async setMap(map){
   const generation=++this.generation;
   this.map=map;this.ready=false;this.tiles=[];
-  this.label.textContent=map.photo||map.satellite?.photo?'Reading aerial photo…':map.real?'Loading satellite…':'No satellite · fictional yard';
+  this.label.textContent=map.photo||map.satellite?.photo?'Reading aerial photo…':map.real?'Loading satellite…':'No satellite';
   this.paint(0,0,0);
   if(!map.real&&!map.photo&&!map.satellite?.photo)return;
   const coverage=map.satellite||await loadSatelliteCoverage(map.lat,map.lon);
@@ -168,6 +177,18 @@ export class SatelliteMap{
   c.fillStyle='#142025';
   c.fillRect(0,0,s,s);
   const sat=this.map.satellite;
+  if(sat?.texture?.image){
+   try{c.drawImage(sat.texture.image,0,0,s,s);}catch{/* ignore closed bitmaps */}
+   const scale=s/(sat.span||this.span||480);
+   c.strokeStyle='#ffffff66';c.lineWidth=1;
+   c.strokeRect(s/2-this.map.radius*scale,s/2-this.map.radius*scale,2*this.map.radius*scale,2*this.map.radius*scale);
+   const px=s/2+x*scale,py=s/2+z*scale;
+   c.save();c.translate(px,py);c.rotate(angle);c.fillStyle='#fff';c.beginPath();c.moveTo(0,-12);c.lineTo(-4,-5);c.lineTo(4,-5);c.closePath();c.fill();c.restore();
+   c.beginPath();c.arc(px,py,5,0,Math.PI*2);c.fillStyle='#ff3434';c.fill();c.strokeStyle='white';c.lineWidth=1.5;c.stroke();
+   c.fillStyle='white';c.font='bold 12px sans-serif';c.textAlign='left';c.fillText('N ↑',8,17);
+   c.fillRect(10,s-14,100*scale,2);c.font='10px sans-serif';c.fillText('100 m',10,s-20);
+   return;
+  }
   if(sat?.photo&&sat.photoImage){
    const scale=s/this.span,dim=(sat.photoMeters||PHOTO_METERS)*scale;
    try{c.drawImage(sat.photoImage,s/2-dim/2,s/2-dim/2,dim,dim);}catch{/* ignore closed bitmaps */}
@@ -182,7 +203,7 @@ export class SatelliteMap{
   }
   if(!this.map?.real){
    c.fillStyle='#9baaa4';c.font='12px sans-serif';c.textAlign='center';
-   c.fillText('Fictional training yard',s/2,s/2);return;
+   c.fillText('No satellite for this sector',s/2,s/2);return;
   }
   if(!this.center)return;
   const scale=s/this.sourceSize;

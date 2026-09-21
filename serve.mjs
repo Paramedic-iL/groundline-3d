@@ -31,7 +31,10 @@ const server = http.createServer((req, res) => {
       res.end('not found');
       return;
     }
-    res.writeHead(200, {'Content-Type': types[path.extname(file)] || 'application/octet-stream'});
+    res.writeHead(200, {
+      'Content-Type': types[path.extname(file)] || 'application/octet-stream',
+      'Cache-Control': 'no-store',
+    });
     res.end(data);
   });
 });

@@ -103,8 +103,8 @@ export function mergePhotoFeatures(map,features){
  }
  return map;
 }
-export function mapFromPhoto(image,name='Aerial photo stage'){
- const features=analyzeImage(image);
+export function mapFromPhoto(image,name='Aerial photo stage',span=PHOTO_METERS){
+ const features=analyzeImage(image,span);
  const radius=Math.max(70,features.span/2-8);
  let spawn=features.roads[0]?.points?.[0]||{x:0,z:radius*.35};
  for(const r of features.roads)for(const p of r.points){
@@ -113,8 +113,59 @@ export function mapFromPhoto(image,name='Aerial photo stage'){
  return {
   name,real:false,photo:true,lat:null,lon:null,radius,
   buildings:features.buildings,roads:features.roads,cover:[],
-  fences:features.fences,trees:features.trees,yards:[],spawn,
+  fences:features.fences,trees:features.trees,yards:[],stairs:[],spawn,
   satellite:coverageFromPhoto(image,null,null,features.span)
  };
 }
 export function photoCoverage(image,lat,lon){return coverageFromPhoto(image,lat,lon);}
+export function parseScale(value){
+ const text=String(value||'').trim();
+ const m=text.match(/^1\s*:\s*(\d+(?:\.\d+)?)$/i)||text.match(/^(\d+(?:\.\d+)?)$/);
+ const n=Number(m?.[1]);
+ if(!Number.isFinite(n)||n<50||n>50000)throw Error('Use a map scale like 1:500 or 1:3000 (1 is constant).');
+ return n;
+}
+export function photoSpanMeters(image,scaleN,dpi=96){
+ const px=Math.max(1,image.width||image.displayWidth||1,image.height||image.displayHeight||1);
+ const meters=(px/dpi)*2.54*(scaleN/100);
+ return Math.max(90,Math.min(900,meters));
+}
+function lumaAt(data,i){return .299*data[i]+.587*data[i+1]+.114*data[i+2];}
+function sampleGray(image,size,dx=0,dy=0,dim=size){
+ const canvas=typeof document==='undefined'?null:document.createElement('canvas');
+ if(!canvas)return null;
+ canvas.width=canvas.height=size;
+ const ctx=canvas.getContext('2d',{willReadFrequently:true});
+ ctx.fillStyle='#7a8478';ctx.fillRect(0,0,size,size);
+ try{ctx.drawImage(image,(size-dim)/2+dx,(size-dim)/2+dy,dim,dim);}catch{return null;}
+ const {data}=ctx.getImageData(0,0,size,size),g=new Float32Array(size*size);
+ let mean=0;
+ for(let i=0;i<g.length;i++){g[i]=lumaAt(data,i*4);mean+=g[i];}
+ mean/=g.length;let v=0;
+ for(let i=0;i<g.length;i++){g[i]-=mean;v+=g[i]*g[i];}
+ const sdev=Math.sqrt(v/g.length)||1;
+ for(let i=0;i<g.length;i++)g[i]/=sdev;
+ return g;
+}
+export function alignPhotoToCoverage(photo,coverage,photoMeters,groundMeters=480){
+ const ref=coverage?.texture?.image;
+ if(!ref||typeof document==='undefined')return {dx:0,dz:0,scale:1,score:0};
+ const S=72,pxPerM=S/groundMeters,base=sampleGray(ref,S);
+ if(!base)return {dx:0,dz:0,scale:1,score:0};
+ let best={dx:0,dz:0,scale:1,score:-Infinity};
+ const maxShift=Math.min(14,Math.floor(S*.2));
+ for(const sc of [.86,.93,1,1.08,1.16]){
+  const dim=photoMeters*sc*pxPerM;
+  if(dim<16||dim>S*1.35)continue;
+  for(let dy=-maxShift;dy<=maxShift;dy+=2)for(let dx=-maxShift;dx<=maxShift;dx+=2){
+   const layer=sampleGray(photo,S,dx,dy,dim);
+   if(!layer)continue;
+   let acc=0,n=0;
+   for(let i=0;i<layer.length;i++){acc+=layer[i]*base[i];n++;}
+   const score=acc/n;
+   if(score>best.score)best={dx:dx/pxPerM,dz:dy/pxPerM,scale:sc,score};
+  }
+ }
+ if(!(best.score>0.06))return {dx:0,dz:0,scale:1,score:best.score};
+ return best;
+}

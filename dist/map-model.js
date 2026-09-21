@@ -1,10 +1,9 @@
-export const INITIAL = [31.714529247844197, 35.10143442409436];
+export const INITIAL = [31.163931271887215, 34.53230754534885];
 export const LOCATIONS = [
- {name:'Your selected area',lat:INITIAL[0],lon:INITIAL[1],file:'initial-map.json'},
- {name:'Tel Aviv',lat:32.0668,lon:34.7731,file:'telaviv-map.json'},
- {name:'Barcelona',lat:41.3851,lon:2.1734,file:'barcelona-map.json'}
+ {name:'Your selected area',lat:31.714529247844197,lon:35.10143442409436,file:'initial-map.json'},
+ {name:'Tel Aviv',lat:32.0668,lon:34.7731,file:'telaviv-map.json'}
 ];
-export const STEP_UP=.42,PLAYER_STAND=1.72,PLAYER_CROUCH=1.08;
+export const STEP_UP=.42,PLAYER_STAND=1.72,PLAYER_CROUCH=1.08,FLOOR_SLAB=.36;
 export function coordinates(value){
  const parts=String(value).trim().split(/[,\s]+/);
  if(parts.length!==2||parts.some(v=>v===''))throw Error('Enter two numbers: latitude, longitude.');
@@ -65,7 +64,7 @@ export function blocked(x,z,buildings,r=.55,context){
   if(x<b.minX-r||x>b.maxX+r||z<b.minZ-r||z>b.maxZ+r)return false;
   if(b.doors&&playerY!=null){
    for(const d of b.doors){
-    if(segmentDistance(x,z,d.a,d.b)<(d.thick||.22)+r)return playerTop>d.top+.03;
+    if(segmentDistance(x,z,d.a,d.b)<(d.thick||.22)+r)return playerY<d.bottom-STEP_UP||playerTop>d.top+.03;
    }
   }
   if(b.shell)return b.shell.some(w=>segmentDistance(x,z,w.a,w.b)<(w.thick||.22)+r);
@@ -75,17 +74,84 @@ export function blocked(x,z,buildings,r=.55,context){
  for(const t of trees)if(Math.hypot(x-t.x,z-t.z)<.36+r)return true;
  return false;
 }
-export function standHeight(x,z,buildings,groundY,yards){
- let y=groundY;
+function inStairWell(x,z,s,r=.28){
+ if(!s)return false;
+ const half=(s.width||1.1)/2+r;
+ if(segmentDistance(x,z,s.a,s.b)<=half)return true;
+ if(!s.well||s.well.length<3)return false;
+ if(inside(x,z,s.well))return true;
+ return s.well.some((p,i)=>segmentDistance(x,z,p,s.well[(i+1)%s.well.length])<r);
+}
+function stairCovers(s,playerY){
+ const lo=Math.min(s.wellY0??s.y0,s.y0),hi=Math.max(s.wellY1??s.y1,s.y1);
+ return playerY>=lo-.35&&playerY<=hi+.45;
+}
+export function standHeight(x,z,buildings,groundY,yards,stairs,playerY,roads){
+ let y=groundY,stairY=-Infinity,onFlight=false,bestScore=Infinity;
+ const paved=roads&&onRoad(x,z,roads,.35);
  for(const yard of yards||[]){
-  if(x<yard.minX||x>yard.maxX||z<yard.minZ||z>yard.maxZ||!inside(x,z,yard.points))continue;
-  y=Math.max(y,yard.top);
+  if(paved)break;
+  if(x<yard.minX-.4||x>yard.maxX+.4||z<yard.minZ-.4||z>yard.maxZ+.4)continue;
+  const ring=yard.points,onLot=inside(x,z,ring)||ring.some((p,i)=>segmentDistance(x,z,p,ring[(i+1)%ring.length])<.35);
+  if(onLot)y=Math.max(y,yard.top);
  }
+ for(const s of stairs||[]){
+  const half=(s.width||1.5)/2+.18;
+  const onRun=segmentDistance(x,z,s.a,s.b)<=half;
+  const nearTop=Math.hypot(x-s.b.x,z-s.b.z)<half+.55;
+  if(!onRun&&!(nearTop&&(playerY==null||Math.abs(playerY-s.y1)<=STEP_UP+.2)))continue;
+  const dx=s.b.x-s.a.x,dz=s.b.z-s.a.z,len2=dx*dx+dz*dz||1,run=Math.sqrt(len2);
+  const tRaw=((x-s.a.x)*dx+(z-s.a.z)*dz)/len2;
+  if(s.flat||Math.abs((s.y1??0)-(s.y0??0))<.05){
+   const sy=s.y1,score=playerY==null?-sy:Math.abs(sy-playerY);
+   if(score<bestScore){bestScore=score;stairY=sy;onFlight=false;}
+   continue;
+  }
+  const t=Math.max(0,Math.min(1,tRaw));
+  const tLand=Math.max(.62,1-Math.min(run*.28,.85)/run);
+  const onLanding=!onRun||t>=tLand||tRaw>=.95||(nearTop&&tRaw>.78);
+  const sy=onLanding?s.y1:s.y0+(s.y1-s.y0)*(t/tLand);
+  const score=playerY==null?-sy:Math.abs(sy-playerY);
+  if(score<bestScore){bestScore=score;stairY=sy;onFlight=onRun&&tRaw>.02&&!onLanding;}
+ }
+ if(stairY>-Infinity)y=Math.max(y,stairY);
+ const openWells=(stairs||[]).filter(s=>inStairWell(x,z,s));
  for(const b of buildings){
   if(b.base==null||x<b.minX||x>b.maxX||z<b.minZ||z>b.maxZ||!inside(x,z,b.points))continue;
-  y=Math.max(y,b.base);
+  const floors=b.storeys?.length?b.storeys:[b.base];
+  let floor=-Infinity;
+  if(playerY==null)floor=floors[0];
+  else{
+   for(const f of floors){
+    if(openWells.some(s=>stairCovers(s,f-.2)&&(s.wellY0??s.y0)+.05<f&&f<=(s.wellY1??s.y1)+.02))continue;
+    if(f<=playerY+STEP_UP&&f>=floor)floor=f;
+   }
+   if(floor===-Infinity){
+    let best=Infinity;
+    for(const f of floors){const d=Math.abs(f-playerY);if(d<best){best=d;floor=f;}}
+   }
+  }
+  if(onFlight&&floor>stairY+.02)continue;
+  if(floor>-Infinity)y=Math.max(y,floor);
  }
  return y;
+}
+export function ceilingAt(x,z,buildings,playerY,stairs){
+ if(playerY==null)return null;
+ for(const b of buildings){
+  if(b.base==null||x<b.minX||x>b.maxX||z<b.minZ||z>b.maxZ||!inside(x,z,b.points))continue;
+  const on=(stairs||[]).find(s=>inStairWell(x,z,s)&&stairCovers(s,playerY));
+  const floors=[...new Set(b.storeys||[b.base])].sort((a,c)=>a-c);
+  const next=floors.find(f=>f>playerY+STEP_UP+.12);
+  if(on){
+   const top=Math.max(on.wellY1??-Infinity,on.y1??-Infinity);
+   const above=floors.find(f=>f>top+.12);
+   return (above==null?b.base+(b.height||3.2):above)-FLOOR_SLAB;
+  }
+  if(next==null)return b.base+(b.height||3.2)-FLOOR_SLAB;
+  return next-FLOOR_SLAB;
+ }
+ return null;
 }
 function record(points,tags,id){const area=polygonArea(points);if(area<14||area>18000)return null;const levels=Number(tags['building:levels']);const mappedHeight=parseFloat(tags.height);const verified=Number.isFinite(mappedHeight)&&mappedHeight>0||Number.isFinite(levels)&&levels>0;const floors=Number.isFinite(levels)&&levels>0?Math.max(1,Math.round(levels)):Number.isFinite(mappedHeight)&&mappedHeight>0?Math.max(1,Math.round(mappedHeight/3.2)):2+(Number(id)%3===0?1:0);const h=Number.isFinite(mappedHeight)&&mappedHeight>0?mappedHeight:floors*3.2;return {id,points,tags,area,height:Math.min(90,Math.max(2.6,h)),levels:Math.min(28,floors),verified:!!verified,minX:Math.min(...points.map(p=>p.x)),maxX:Math.max(...points.map(p=>p.x)),minZ:Math.min(...points.map(p=>p.z)),maxZ:Math.max(...points.map(p=>p.z))};}
 export function landKind(tags){
@@ -96,10 +162,38 @@ export function landKind(tags){
  return null;
 }
 function nearRoad(x,z,roads,tol){
- return roads.some(r=>{
+ return (roads||[]).some(r=>{
   for(let i=1;i<r.points.length;i++)if(segmentDistance(x,z,r.points[i-1],r.points[i])<(r.width||6)/2+tol)return true;
   return false;
  });
+}
+export function onRoad(x,z,roads,extra=.45){return nearRoad(x,z,roads,extra);}
+function edgeHitsRoad(x0,z0,x1,z1,roads,extra){
+ const len=Math.hypot(x1-x0,z1-z0),n=Math.max(2,Math.ceil(len/1.1));
+ for(let i=0;i<=n;i++){const t=i/n;if(nearRoad(x0+(x1-x0)*t,z0+(z1-z0)*t,roads,extra))return true;}
+ return false;
+}
+export function pullRingOffRoads(ring,roads,extra=.7){
+ if(!ring||ring.length<3||!(roads||[]).length)return ring;
+ const dense=[];
+ for(let i=0;i<ring.length;i++){
+  const a=ring[i],b=ring[(i+1)%ring.length],len=Math.hypot(b.x-a.x,b.z-a.z)||1,n=Math.max(1,Math.ceil(len/1.3));
+  for(let k=0;k<n;k++)dense.push({x:a.x+(b.x-a.x)*k/n,z:a.z+(b.z-a.z)*k/n});
+ }
+ const cx=dense.reduce((s,p)=>s+p.x,0)/dense.length,cz=dense.reduce((s,p)=>s+p.z,0)/dense.length;
+ const out=[];
+ for(const p of dense){
+  let x=p.x,z=p.z;
+  for(let n=0;n<12&&nearRoad(x,z,roads,extra);n++){
+   const dx=cx-x,dz=cz-z,L=Math.hypot(dx,dz)||1;
+   x+=dx/L*.4;z+=dz/L*.4;
+  }
+  if(nearRoad(x,z,roads,extra*.55))continue;
+  const last=out.at(-1);if(last&&Math.hypot(x-last.x,z-last.z)<.35)continue;
+  out.push({x,z});
+ }
+ if(out.length<3||polygonArea(out)<8)return null;
+ return out;
 }
 function inferYardFences(buildings,fences,trees,roads){
  const houses=buildings.filter(b=>b.area>=40&&b.area<=320&&b.levels<=3);
@@ -107,11 +201,28 @@ function inferYardFences(buildings,fences,trees,roads){
  for(const b of houses){
   const cx=(b.minX+b.maxX)/2,cz=(b.minZ+b.maxZ)/2;
   if(fences.some(f=>{const ring=closedRing(f.points);return ring&&inside(cx,cz,ring);}))continue;
-  const pad=3.4+(Number(b.id||0)%5)*.35;
-  const minX=b.minX-pad,maxX=b.maxX+pad,minZ=b.minZ-pad,maxZ=b.maxZ+pad;
+  const pad=3.4+(Number(b.id||0)%5)*.35,extra=.7;
+  let minX=b.minX-pad,maxX=b.maxX+pad,minZ=b.minZ-pad,maxZ=b.maxZ+pad;
+  for(let n=0;n<48&&edgeHitsRoad(minX,minZ,minX,maxZ,roads,extra);n++)minX=Math.min(b.minX-.3,minX+.25);
+  for(let n=0;n<48&&edgeHitsRoad(maxX,minZ,maxX,maxZ,roads,extra);n++)maxX=Math.max(b.maxX+.3,maxX-.25);
+  for(let n=0;n<48&&edgeHitsRoad(minX,minZ,maxX,minZ,roads,extra);n++)minZ=Math.min(b.minZ-.3,minZ+.25);
+  for(let n=0;n<48&&edgeHitsRoad(minX,maxZ,maxX,maxZ,roads,extra);n++)maxZ=Math.max(b.maxZ+.3,maxZ-.25);
+  if(maxX-minX<b.maxX-b.minX+.45||maxZ-minZ<b.maxZ-b.minZ+.45)continue;
+  if(edgeHitsRoad(minX,minZ,maxX,minZ,roads,extra)||edgeHitsRoad(minX,maxZ,maxX,maxZ,roads,extra)||edgeHitsRoad(minX,minZ,minX,maxZ,roads,extra)||edgeHitsRoad(maxX,minZ,maxX,maxZ,roads,extra))continue;
   if(buildings.some(o=>o!==b&&o.minX<maxX-.9&&o.maxX>minX+.9&&o.minZ<maxZ-.9&&o.maxZ>minZ+.9))continue;
   const pts=[{x:minX,z:minZ},{x:maxX,z:minZ},{x:maxX,z:maxZ},{x:minX,z:maxZ},{x:minX,z:minZ}];
-  if(pts.some(p=>nearRoad(p.x,p.z,roads,1.6)))continue;
+  if(pts.some(p=>nearRoad(p.x,p.z,roads,1.2)))continue;
+  let cut=false;
+  for(const r of roads||[]){
+   for(let i=1;!cut&&i<r.points.length;i++){
+    const a=r.points[i-1],c=r.points[i],len=Math.hypot(c.x-a.x,c.z-a.z),steps=Math.max(1,Math.ceil(len/2));
+    for(let k=0;k<=steps;k++){
+     const t=k/steps,x=a.x+(c.x-a.x)*t,z=a.z+(c.z-a.z)*t;
+     if(x>minX&&x<maxX&&z>minZ&&z<maxZ&&!inside(x,z,b.points)){cut=true;break;}
+    }
+   }
+  }
+  if(cut)continue;
   fences.push(markFenceOpening({id:`yard-${b.id}`,points:pts,kind:'fence',width:.08,height:1.15,inferred:true}));
   const candidates=[{x:minX+1.3,z:minZ+1.3},{x:maxX-1.3,z:minZ+1.3},{x:minX+1.3,z:maxZ-1.3}];
   for(const p of candidates){
@@ -173,7 +284,7 @@ export function convert(data,lat,lon,name='Selected coordinates'){
  }
  if(buildings.length<3||roads.length<1)throw Error('Insufficient mapped buildings or roads here. Choose a nearby built-up area. No fictional streets were substituted.');
  inferYardFences(buildings,fences,trees,roads);
- const map={name,lat,lon,buildings,roads,cover,fences,trees:scatterForest(cover,buildings,trees),yards:[],real:true,radius:195};map.spawn=findSpawn(map);return map;
+ const map={name,lat,lon,buildings,roads,cover,fences,trees:scatterForest(cover,buildings,trees),yards:[],stairs:[],real:true,radius:195};map.spawn=findSpawn(map);return map;
 }
 export function findSpawn(map){let best=null,bestD=Infinity;for(const road of map.roads){for(let i=1;i<road.points.length;i++){const a=road.points[i-1],b=road.points[i];const length=Math.hypot(a.x-b.x,a.z-b.z),steps=Math.max(1,Math.ceil(length/4));for(let j=0;j<=steps;j++){const t=j/steps,x=a.x+(b.x-a.x)*t,z=a.z+(b.z-a.z)*t,d=Math.hypot(x,z);if(d<bestD&&d<map.radius-5&&!blocked(x,z,map.buildings,1,{fences:map.fences,trees:map.trees})){best={x,z};bestD=d;}}}}if(!best)throw Error('No safe playable spawn was found on these mapped roads. Try another location.');return best;}
 export function fromXML(text){
@@ -190,8 +301,8 @@ export function fromXML(text){
 }
 export function training(){
  const buildings=[];let id=1;
- for(const x of [-40,-19,19,40])for(const z of [-48,-22,7,35]){const w=12+(id%3),d=16;const b=record([{x:x-w/2,z:z-d/2},{x:x+w/2,z:z-d/2},{x:x+w/2,z:z+d/2},{x:x-w/2,z:z+d/2}],{},id++);b.verified=false;buildings.push(b);}
+ for(const x of [-40,-19,19,40])for(const z of [-48,-22,7,35]){const small=id%5===2;const w=small?5.6:12+(id%3),d=small?8:16;const b=record([{x:x-w/2,z:z-d/2},{x:x+w/2,z:z-d/2},{x:x+w/2,z:z+d/2},{x:x-w/2,z:z+d/2}],small?{'building:levels':'1'}:{},id++);b.verified=false;buildings.push(b);}
  const fences=[markFenceOpening({id:'train-fence',kind:'fence',width:.08,height:1.15,points:[{x:-54,z:-62},{x:-26,z:-62},{x:-26,z:-34},{x:-54,z:-34},{x:-54,z:-62}]})];
  const trees=[{x:8,z:14,h:6.1},{x:-9,z:20,h:5.2},{x:24,z:-12,h:7},{x:-22,z:8,h:5.6},{x:12,z:-28,h:6.4}];
- return {name:'Training yard',real:false,lat:null,lon:null,radius:90,buildings,cover:[],fences,trees,yards:[],spawn:{x:0,z:25},roads:[{width:9,points:[{x:0,z:-95},{x:0,z:95}],name:'TRAINING',kind:'residential'},{width:7,points:[{x:-90,z:-7},{x:90,z:-7}],name:'',kind:'residential'},{width:6,points:[{x:-90,z:53},{x:90,z:53}],name:'',kind:'residential'}]};
+ return {name:'Training yard',real:false,lat:null,lon:null,radius:90,buildings,cover:[],fences,trees,yards:[],stairs:[],spawn:{x:0,z:25},roads:[{width:9,points:[{x:0,z:-95},{x:0,z:95}],name:'TRAINING',kind:'residential'},{width:7,points:[{x:-90,z:-7},{x:90,z:-7}],name:'',kind:'residential'},{width:6,points:[{x:-90,z:53},{x:90,z:53}],name:'',kind:'residential'}]};
 }
