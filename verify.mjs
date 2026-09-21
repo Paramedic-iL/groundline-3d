@@ -1,8 +1,9 @@
 import fs from 'node:fs';
 import assert from 'node:assert/strict';
-import {convert,coordinates,blocked,training,LOCATIONS,landKind,PLAYER_STAND,PLAYER_CROUCH,inside,standHeight,ceilingAt,STEP_UP,closedRing,onRoad,segmentDistance,FLOOR_SLAB} from './dist/map-model.js';
+import {convert,coordinates,blocked,training,LOCATIONS,landKind,PLAYER_STAND,PLAYER_CROUCH,inside,standHeight,ceilingAt,lowHeadroom,inWellVoid,STEP_UP,closedRing,onRoad,segmentDistance,FLOOR_SLAB} from './dist/map-model.js';
 import {FLAT,decode,tileXY} from './dist/terrain.js';
 import {createWorld,disposeWorld} from './dist/world.js';
+import * as T from './dist/three.module.js';
 import {analyzeRaster,parseScale,photoSpanMeters} from './dist/photo-stage.js';
 assert.deepEqual(coordinates('31.714529, 35.101434'),[31.714529,35.101434]);
 for(const bad of ['','91,1','31','NaN,7','1,2,3'])assert.throws(()=>coordinates(bad));
@@ -32,7 +33,37 @@ assert(blocked(gap.x,gap.z,t.buildings,.48,{y:tall.doors[0].bottom-STEP_UP-.1,h:
 const lowGap=doorSample(low,0);
 assert(blocked(lowGap.x,lowGap.z,t.buildings,.48,{y:0,h:PLAYER_STAND}),'standing blocked by low lintel');
 assert(!blocked(lowGap.x,lowGap.z,t.buildings,.4,{y:0,h:PLAYER_CROUCH}),'crouch fits low door');
+assert(lowHeadroom(lowGap.x,lowGap.z,t.buildings,0,[]),'a low lintel is the only auto-crouch');
+assert(!lowHeadroom(insidePt.x,insidePt.z,t.buildings,0,[]),'standing by a full-height wall is not a crouch');
 assert(t.buildings.every(b=>b.base>=0),'door sill is never below ground');
+function assertFloorLanding(b,stairs,buildings,groundAt,yards){
+  const flights=stairs.filter(s=>!s.flat&&s.y1-s.y0>.35&&inside((s.a.x+s.b.x)/2,(s.a.z+s.b.z)/2,b.points));
+  const arrivals=flights.filter(s=>(b.storeys||[]).some(y=>Math.abs(s.y1-y)<.08));
+  assert(arrivals.length>=1,'a flight arrives on a storey');
+  for(const s of arrivals){
+   const top=standHeight(s.b.x,s.b.z,buildings,groundAt(s.b.x,s.b.z),yards,stairs,s.y1);
+   assert(top>=s.y1-.08,`top nosing is walkable ${top} vs ${s.y1}`);
+   assert(top-s.y1<=STEP_UP+.02,`no jump at the top nosing ${top-s.y1}`);
+   const dx=s.b.x-s.a.x,dz=s.b.z-s.a.z,len=Math.hypot(dx,dz)||1,ux=dx/len,uz=dz/len;
+   let walkY=s.y1;
+   for(const d of [0,.35,.7,1.05]){
+    const x=s.b.x+ux*d,z=s.b.z+uz*d;
+    if(!inside(x,z,b.points))break;
+    const stand=standHeight(x,z,buildings,groundAt(x,z),yards,stairs,walkY);
+    assert(stand-walkY<=STEP_UP+.02,`walk off the last nosing ${d}m rises ${stand-walkY}`);
+    if(d>=.35)assert(!inWellVoid(x,z,stairs,stand),`the floor after the stair is not a hole at ${d}m`);
+    walkY=stand;
+   }
+   const pads=stairs.filter(p=>p.flat&&Math.abs(p.y1-s.y1)<.08&&inside((p.a.x+p.b.x)/2,(p.a.z+p.b.z)/2,b.points));
+   assert(pads.length>=1,`1.20 m landing at storey ${s.y1}`);
+   for(const p of pads){
+    const cx=(p.a.x+p.b.x)/2,cz=(p.a.z+p.b.z)/2;
+    const stand=standHeight(cx,cz,buildings,groundAt(cx,cz),yards,stairs,s.y1);
+    assert(stand>=s.y1-.08,`walk off onto the landing ${stand} vs ${s.y1}`);
+    assert(stand-s.y1<=STEP_UP+.02,`landing is the floor, not a ledge ${stand-s.y1}`);
+   }
+  }
+ }
 {
  const multi=t.buildings.find(b=>b.levels>=2&&b.area>80);
  assert(multi,'training has a multi-storey house');
@@ -61,6 +92,18 @@ assert(t.buildings.every(b=>b.base>=0),'door sill is never below ground');
  const sx=(onStair.a.x+onStair.b.x)/2,sz=(onStair.a.z+onStair.b.z)/2,sy=(onStair.y0+onStair.y1)/2;
  const headroom=ceilingAt(sx,sz,t.buildings,sy,trainMap.stairs);
  assert(headroom==null||headroom>=sy+PLAYER_STAND-.05,`can stand on the stairs, ceiling ${headroom} at ${sy}`);
+ for(const flight of indoor){
+  const fx=(flight.a.x+flight.b.x)/2,fz=(flight.a.z+flight.b.z)/2,fy=(flight.y0+flight.y1)/2;
+  const caster=new T.Raycaster(new T.Vector3(fx,fy+.25,fz),new T.Vector3(0,1,0),0,Math.max(.8,(flight.wellY1??flight.y1)-fy-.2));
+  const hits=caster.intersectObjects(tw.walls,false);
+  const lid=hits.find(h=>Math.abs(h.face?.normal?.y??0)>.7);
+  assert(!lid,`stairwell stays open through the slab on ${flight.fold||'flight'} y=${lid?.point.y}`);
+  const tx=flight.a.x+(flight.b.x-flight.a.x)*.88,tz=flight.a.z+(flight.b.z-flight.a.z)*.88,ty=flight.y0+(flight.y1-flight.y0)*.88;
+  const topCast=new T.Raycaster(new T.Vector3(tx,ty+.08,tz),new T.Vector3(0,1,0),0,.55);
+  const topHits=topCast.intersectObjects(tw.walls,false);
+  const topLid=topHits.find(h=>Math.abs(h.face?.normal?.y??0)>.7&&h.point.y<flight.y1+.02);
+  assert(!topLid,`last treads are not buried in the slab y=${topLid?.point.y}`);
+ }
  assert(Math.abs(tall.doors[0].bottom)<.08,'street door sits on the ground floor');
  {
   const d=multi.doors[0],mx=(d.a.x+d.b.x)/2,mz=(d.a.z+d.b.z)/2;
@@ -73,6 +116,19 @@ assert(t.buildings.every(b=>b.base>=0),'door sill is never below ground');
    assert(!(Math.abs(along)<1.15&&inw>-.1&&inw<1.15),`entrance lobby stays clear of the stair ${along.toFixed(2)},${inw.toFixed(2)}`);
   }
  }
+ for(const s of indoor){
+  const mx=(s.a.x+s.b.x)/2,mz=(s.a.z+s.b.z)/2;
+  let wall=Infinity;
+  for(let i=0;i<multi.points.length;i++)wall=Math.min(wall,segmentDistance(mx,mz,multi.points[i],multi.points[(i+1)%multi.points.length]));
+  assert(wall>=.7,`interior stair is walkable, not in the wall ${wall.toFixed(2)}`);
+  assert(!inWellVoid(mx,mz,trainMap.stairs,(s.y0+s.y1)/2),'the climb is not a hole');
+  const dx=s.b.x-s.a.x,dz=s.b.z-s.a.z,len=Math.hypot(dx,dz)||1;
+  const ax=s.a.x-dx/len*.8,az=s.a.z-dz/len*.8;
+  assert(inside(ax,az,multi.points),`can stand in front of the first tread`);
+  let approach=Infinity;
+  for(let i=0;i<multi.points.length;i++)approach=Math.min(approach,segmentDistance(ax,az,multi.points[i],multi.points[(i+1)%multi.points.length]));
+  if(Math.abs(s.y0-multi.base)<.12)assert(approach>=.7,`approach to the stair is not in the wall ${approach.toFixed(2)}`);
+ }
  const flight=indoor[0];
  let prevY=flight.y0;
  const len=Math.hypot(flight.b.x-flight.a.x,flight.b.z-flight.a.z)||1,step=.12/len;
@@ -81,24 +137,6 @@ assert(t.buildings.every(b=>b.base>=0),'door sill is never below ground');
   const y=standHeight(x,z,t.buildings,0,trainMap.yards,trainMap.stairs,prevY);
   assert(y-prevY<=STEP_UP+.02,`interior stair t=${u.toFixed(2)} rises ${y-prevY}`);
   prevY=y;
- }
- function assertFloorLanding(b,stairs,buildings,groundAt,yards){
-  const flights=stairs.filter(s=>!s.flat&&s.y1-s.y0>.35&&inside((s.a.x+s.b.x)/2,(s.a.z+s.b.z)/2,b.points));
-  const arrivals=flights.filter(s=>(b.storeys||[]).some(y=>Math.abs(s.y1-y)<.08));
-  assert(arrivals.length>=1,'a flight arrives on a storey');
-  for(const s of arrivals){
-   const top=standHeight(s.b.x,s.b.z,buildings,groundAt(s.b.x,s.b.z),yards,stairs,s.y1);
-   assert(top>=s.y1-.08,`top nosing is walkable ${top} vs ${s.y1}`);
-   assert(top-s.y1<=STEP_UP+.02,`no jump at the top nosing ${top-s.y1}`);
-   const pads=stairs.filter(p=>p.flat&&Math.abs(p.y1-s.y1)<.08&&inside((p.a.x+p.b.x)/2,(p.a.z+p.b.z)/2,b.points));
-   assert(pads.length>=1,`1.20 m landing at storey ${s.y1}`);
-   for(const p of pads){
-    const cx=(p.a.x+p.b.x)/2,cz=(p.a.z+p.b.z)/2;
-    const stand=standHeight(cx,cz,buildings,groundAt(cx,cz),yards,stairs,s.y1);
-    assert(stand>=s.y1-.08,`walk off onto the landing ${stand} vs ${s.y1}`);
-    assert(stand-s.y1<=STEP_UP+.02,`landing is the floor, not a ledge ${stand-s.y1}`);
-   }
-  }
  }
  assertFloorLanding(multi,trainMap.stairs,t.buildings,()=>0,trainMap.yards);
 }
@@ -188,17 +226,24 @@ const flight=indoor[0];
  }
  assert(indoor.every(s=>(s.n||Math.round((s.y1-s.y0)/s.H))<=16),'indoor flights have at most 16 risers');
  assert(flight.width>=1.1,'interior stairwell is wide enough to walk in top-down');
-  const doorStair=slopeMap.stairs.find(s=>!s.flat&&s!==flight&&s.y1-s.y0>.45&&s.y1-s.y0<3.1&&!inside((s.a.x+s.b.x)/2,(s.a.z+s.b.z)/2,fenced.points));
+  const outdoor=slopeMap.stairs.filter(s=>!s.flat&&!s.well&&s.y1-s.y0>.45&&s.y1-s.y0<3.1&&!sloped.buildings.some(b=>inside((s.a.x+s.b.x)/2,(s.a.z+s.b.z)/2,b.points)));
+  assert(outdoor.length>=1,'street stairs climb to a raised door');
+  const doorStair=outdoor[0];
   if(doorStair){
+   const run=Math.hypot(doorStair.b.x-doorStair.a.x,doorStair.b.z-doorStair.a.z);
+   assert(Math.abs(run-(doorStair.n||1)*doorStair.B)<.4,`street stair run follows n×B ${run.toFixed(2)} vs ${(doorStair.n*doorStair.B).toFixed(2)}`);
+   const foot=standHeight(doorStair.a.x,doorStair.a.z,sloped.buildings,slope.height(doorStair.a.x),slopeMap.yards,slopeMap.stairs,null,slopeMap.roads);
+   assert(doorStair.y0-foot<=STEP_UP+.05,`first street tread is a walk from the ground ${doorStair.y0} vs ${foot}`);
    const t=.4,dx=doorStair.a.x+(doorStair.b.x-doorStair.a.x)*t,dz=doorStair.a.z+(doorStair.b.z-doorStair.a.z)*t;
    const sy=doorStair.y0+(doorStair.y1-doorStair.y0)*t;
    const walk=standHeight(dx,dz,sloped.buildings,slope.height(dx),slopeMap.yards,[doorStair],sy);
-   assert(Math.abs(walk-sy)<=STEP_UP+.05||Math.abs(walk-doorStair.y1)<=.05,`door stairs are walkable without a jump ${walk} vs ${sy}`);
+   assert(walk>=sy-.08||Math.abs(walk-doorStair.y1)<=.05,`door stairs stay at or above the ramp ${walk} vs ${sy}`);
    let doorY=doorStair.y0,doorLen=Math.hypot(doorStair.b.x-doorStair.a.x,doorStair.b.z-doorStair.a.z)||1,doorStep=.12/doorLen;
    for(let u=0;u<=1.001;u+=doorStep){
     const x=doorStair.a.x+(doorStair.b.x-doorStair.a.x)*Math.min(1,u),z=doorStair.a.z+(doorStair.b.z-doorStair.a.z)*Math.min(1,u);
     const y=standHeight(x,z,sloped.buildings,slope.height(x),slopeMap.yards,[doorStair],doorY);
     assert(y-doorY<=STEP_UP+.02,`door stair t=${u.toFixed(2)} rises ${y-doorY}`);
+    assert(!blocked(x,z,sloped.buildings,.4,{fences:slopeMap.fences,trees:slopeMap.trees,y,h:PLAYER_STAND}),`street stair is not through a fence t=${u.toFixed(2)}`);
     doorY=y;
    }
   }
@@ -235,6 +280,45 @@ disposeWorld(sw.scene);
  }
  disposeWorld(aw.scene);
 }
+{
+ const box={id:'324338011',points:[{x:0,z:0},{x:14,z:0},{x:14,z:12},{x:0,z:12}],tags:{'building:levels':'2'},area:168,height:6.4,levels:2,verified:true,minX:0,maxX:14,minZ:0,maxZ:12};
+ const house={name:'L-stair',real:false,lat:null,lon:null,radius:90,cover:[],fences:[{id:'through',kind:'fence',width:.08,height:1.15,points:[{x:-1,z:6},{x:15,z:6}]}],trees:[],yards:[],stairs:[],spawn:{x:20,z:20},
+  buildings:[box],
+  roads:[{width:6,points:[{x:-8,z:-3},{x:24,z:-3}],name:'',kind:'residential'}]};
+ const houseMap={...house,terrain:FLAT};
+ const hw=createWorld(houseMap);
+ const b=house.buildings[0];
+ assert(b.storeys.length>=2,'L house has two storeys');
+ const indoor=houseMap.stairs.filter(s=>!s.flat&&s.y1-s.y0>.35&&inside((s.a.x+s.b.x)/2,(s.a.z+s.b.z)/2,b.points));
+ assert(indoor.length>=1,'L house has interior stairs');
+ assertFloorLanding(b,houseMap.stairs,house.buildings,()=>0,houseMap.yards);
+ for(const s of indoor){
+  const t=.88,x=s.a.x+(s.b.x-s.a.x)*t,z=s.a.z+(s.b.z-s.a.z)*t,y=s.y0+(s.y1-s.y0)*t;
+  const caster=new T.Raycaster(new T.Vector3(x,y+.08,z),new T.Vector3(0,1,0),0,.55);
+  const hits=caster.intersectObjects(hw.walls,false);
+  const lid=hits.find(h=>Math.abs(h.face?.normal?.y??0)>.7&&h.point.y<s.y1+.02);
+  assert(!lid,`L last treads are not under the slab y=${lid?.point.y}`);
+ }
+ disposeWorld(hw.scene);
+}
+{
+ const box={id:'fenced-front',points:[{x:0,z:0},{x:12,z:0},{x:12,z:10},{x:0,z:10}],tags:{'building:levels':'2'},area:120,height:6.4,levels:2,verified:true,minX:0,maxX:12,minZ:0,maxZ:10};
+ const house={name:'fence-door',real:false,lat:null,lon:null,radius:90,cover:[],
+  fences:[{id:'south-rail',kind:'fence',width:.08,height:1.15,points:[{x:-2,z:11.2},{x:14,z:11.2}]}],
+  trees:[],yards:[],stairs:[],spawn:{x:6,z:-8},
+  buildings:[box],
+  roads:[{width:6,points:[{x:-8,z:-4},{x:20,z:-4}],name:'',kind:'residential'}]};
+ const fenceMap={...house,terrain:FLAT};
+ const fw=createWorld(fenceMap);
+ assert(box.doors.length,'fenced-front house still has a door');
+ const d=box.doors[0],mz=(d.a.z+d.b.z)/2;
+ assert(mz<3.2,`door is not placed through the south fence, z=${mz}`);
+ const mx=(d.a.x+d.b.x)/2;
+ let nx=d.b.z-d.a.z,nz=-(d.b.x-d.a.x),nl=Math.hypot(nx,nz)||1;nx/=nl;nz/=nl;
+ if(inside(mx+nx*.4,mz+nz*.4,box.points)){nx=-nx;nz=-nz;}
+ for(const out of [.5,1.2,2.2])assert(!blocked(mx+nx*out,mz+nz*out,house.buildings,.45,{fences:house.fences}),`approach ${out}m is not through a fence`);
+ disposeWorld(fw.scene);
+}
 const html=fs.readFileSync('dist/index.html','utf8'),js=fs.readFileSync('dist/game.js','utf8');const ids=new Set([...html.matchAll(/id="([^"]+)"/g)].map(m=>m[1]));for(const match of js.matchAll(/\$\('([^']+)'\)/g))assert(ids.has(match[1]),`Missing DOM id: ${match[1]}`);
 const data=JSON.parse(fs.readFileSync('dist/initial-map.json','utf8'));
 const real=convert(data,LOCATIONS[0].lat,LOCATIONS[0].lon,LOCATIONS[0].name);
@@ -263,6 +347,18 @@ assert(photo.roads.length>=1);
 assert.equal(parseScale('1:500'),500);
 assert.equal(parseScale('1:3000'),3000);
 assert.throws(()=>parseScale('2:500'));
+{
+ const html=fs.readFileSync('dist/index.html','utf8');
+ assert(html.includes('id="info-toggle"')&&html.includes('id="data-note"')&&html.includes('hidden'),'Know what’s real is behind the i control');
+ assert(html.includes('id="coord-route"')&&html.includes('id="photo-route"')&&html.includes('id="photo-body"'),'coordinates and photo stage are separate boxes');
+ assert((html.match(/id="load-map"[\s\S]*?Load area/)||html.includes('id="load-map"'))&&html.includes('id="photo-stage"'),'each route has its own Load area');
+ assert(html.includes('Press ? in game to see the controls.'),'pause points at in-game help');
+ assert(!html.includes('W moves toward your aim'),'pause does not dump the control list');
+ assert(html.includes('id="load-debug"')&&html.includes('id="summary-toggle"'),'load dump is behind a collapsed Load details control');
+ const css=fs.readFileSync('dist/style.css','utf8');
+ assert(css.includes('body.phone-layout .health-track{width:92px;height:4px'),'mobile health is a thin stripe');
+ assert(css.includes('body.phone-layout .bottom-hud .eyebrow'),'mobile HUD hides the HEALTH/weapon labels');
+}
 const photoM=photoSpanMeters({width:2000,height:1500},500);
 assert(photoM>200&&photoM<400,`1:500 on a 2000px image should be a few hundred metres, got ${photoM}`);
 for(const file of ['game.js','world.js','map-model.js','terrain.js','three.module.js','style.css','sprites.png','initial-map.json','telaviv-map.json','credits.html','Soldier.glb','characters.js','GLTFLoader.js','SkeletonUtils.js','BufferGeometryUtils.js','weapons.js','controls.js','satellite.js','photo-stage.js','icon.png','satellite-9789-6668.jpg','satellite-9774-6649.jpg'])assert(fs.existsSync(`dist/${file}`),`Missing asset ${file}`);

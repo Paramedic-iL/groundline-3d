@@ -1,12 +1,12 @@
 import * as T from './three.module.js';
-import {INITIAL,LOCATIONS,coordinates,convert,fromXML,blocked,standHeight,ceilingAt,STEP_UP,PLAYER_STAND,PLAYER_CROUCH,inside} from './map-model.js?v=ground-v3';
+import {INITIAL,LOCATIONS,coordinates,convert,fromXML,blocked,standHeight,ceilingAt,lowHeadroom,inWellVoid,STEP_UP,PLAYER_STAND,PLAYER_CROUCH,inside} from './map-model.js?v=well-v8';
 import {FLAT,loadTerrain} from './terrain.js';
-import {createWorld,person,disposeWorld} from './world.js?v=ground-v3';
+import {createWorld,person,disposeWorld} from './world.js?v=well-v8';
 import {facingMovement,lookVector,clampPitch} from './controls.js';
 import {SatelliteMap,loadSatelliteCoverage,coverageFromPhoto,drapePhotoOnCoverage,GROUND_METERS} from './satellite.js';
 import {analyzeImage,mergePhotoFeatures,mapFromPhoto,parseScale,photoSpanMeters,alignPhotoToCoverage} from './photo-stage.js';
 import {loadCharacters,realisticPerson} from './characters.js';
-import {createWeapon,alignWeapon} from './weapons.js';
+import {createWeapon,alignWeapon} from './weapons.js?v=well-v5';
 const $=id=>document.getElementById(id),TAU=Math.PI*2;
 const SPAWN_ENEMIES=false;
 let renderer;
@@ -98,6 +98,7 @@ function occupy(){return {fences:map.fences,trees:map.trees,y:player.y,h:player.
 function surfaceAt(x,z){return standHeight(x,z,map.buildings,W.height(x,z),map.yards,map.stairs,player.y,map.roads);}
 function canOccupy(x,z,r){
  if(blocked(x,z,map.buildings,r,occupy()))return false;
+ if(inWellVoid(x,z,map.stairs,player.y))return false;
  const rise=surfaceAt(x,z)-player.y;
  if(rise>STEP_UP){
   if(player.grounded)return false;
@@ -126,8 +127,15 @@ async function enterSector(){
  resume();
 }
 function setLoading(value){loading=value;for(const id of ['load-map','deploy','photo-stage'])$(id).disabled=value;}
+function setLoadDebug(text,show){
+ if(text!=null)$('map-summary').textContent=text;
+ $('load-debug').hidden=!show;
+ $('map-summary').hidden=true;
+ $('summary-toggle').setAttribute('aria-expanded','false');
+ $('summary-toggle').querySelector('.collapse-mark').textContent='+';
+}
 async function loadPhotoStage(file){
- if(loading||!file)return false;const id=++requestId;paused=true;clearInput();setLoading(true);$('map-summary').hidden=true;
+ if(loading||!file)return false;const id=++requestId;paused=true;clearInput();setLoading(true);setLoadDebug(null,false);
  try{
   const scaleN=parseScale($('photo-scale').value);
   const [lat,lon]=coordinates($('photo-coords').value||$('location-input').value);
@@ -171,21 +179,19 @@ async function loadPhotoStage(file){
   }
   if(id!==requestId)return false;
   startMap(next);
-  $('map-summary').textContent=`Photo 1:${scaleN} at ${lat.toFixed(5)}, ${lon.toFixed(5)} · ~${photoMeters.toFixed(0)} m across · ${next.buildings.length} buildings · ${next.fences?.length||0} fences · ${next.trees?.length||0} trees. ${next.satellite?.label||''}. North-up photo is layered on the map data.`;
-  $('map-summary').hidden=false;$('deploy').hidden=false;
+  setLoadDebug(`Photo 1:${scaleN} at ${lat.toFixed(5)}, ${lon.toFixed(5)} · ~${photoMeters.toFixed(0)} m across · ${next.buildings.length} buildings · ${next.fences?.length||0} fences · ${next.trees?.length||0} trees. ${next.satellite?.label||''}. North-up photo is layered on the map data.`,true);$('deploy').hidden=false;
   status(next.real?'Ready. Photo aligned to the mapped coordinates. Enter sector to play.':'Ready. Photo sized from the scale; map outlines were unavailable.');return true;
  }catch(e){status(e.message||'The aerial photo could not be read.',true);return false;}
  finally{if(id===requestId)setLoading(false);}
 }
-async function loadMap(lat,lon,name){if(loading)return false;const id=++requestId;paused=true;clearInput();setLoading(true);status('Loading real roads and building outlines…');$('map-summary').hidden=true;const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),22000);try{
+async function loadMap(lat,lon,name){if(loading)return false;const id=++requestId;paused=true;clearInput();setLoading(true);status('Loading real roads and building outlines…');setLoadDebug(null,false);const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),22000);try{
  const bundled=LOCATIONS.find(p=>Math.abs(p.lat-lat)<.00002&&Math.abs(p.lon-lon)<.00002);let data;
  if(bundled){const r=await fetch(`./${bundled.file}`,{signal:controller.signal});if(!r.ok)throw Error('The bundled map could not load. Please retry.');data=await r.json();name=bundled.name;}else{const span=205/111320,dx=span/Math.cos(lat*Math.PI/180);const bbox=[lon-dx,lat-span,lon+dx,lat+span].join(',');const r=await fetch(`https://api.openstreetmap.org/api/0.6/map?bbox=${bbox}`,{signal:controller.signal});if(!r.ok)throw Error(r.status===429?'The map service is busy. Wait a little, then try again.':'The map service could not load this area. Try a nearby location.');data=fromXML(await r.text());}
  const next=convert(data,lat,lon,name||'Selected coordinates');status('Building map. Reading elevation and newest Sentinel-2 mosaic…');
  const [terrain,coverage]=await Promise.all([loadTerrain(lat,lon).catch(()=>FLAT),loadSatelliteCoverage(lat,lon).catch(()=>null)]);
  next.terrain=terrain;next.satellite=coverage;
  if(id!==requestId)return false;pending=next;cache.set(`${lat},${lon}`,next);const verified=next.buildings.filter(b=>b.verified).length;const parks=(next.cover||[]).filter(c=>c.kind!=='water').length,water=(next.cover||[]).filter(c=>c.kind==='water').length;
- $('map-summary').textContent=`${next.buildings.length} mapped buildings · ${verified} with mapped height/levels · ${next.buildings.length-verified} estimated. ${next.cover?.length||0} landcover patches (${parks} park/forest, ${water} water). ${next.fences?.length||0} fences · ${next.trees?.length||0} trees. ${next.terrain.label}. ${coverage?.label||'No satellite'}. Enter sector to generate the playground.`;
- $('map-summary').hidden=false;$('deploy').hidden=false;
+ setLoadDebug(`${next.buildings.length} mapped buildings · ${verified} with mapped height/levels · ${next.buildings.length-verified} estimated. ${next.cover?.length||0} landcover patches (${parks} park/forest, ${water} water). ${next.fences?.length||0} fences · ${next.trees?.length||0} trees. ${next.terrain.label}. ${coverage?.label||'No satellite'}. Enter sector to generate the playground.`,true);$('deploy').hidden=false;
  status(next.terrain.real?(coverage?.draped?'Location ready. Enter sector to build streets, buildings and terrain.':'Location ready. Elevation loaded; satellite drape unavailable. Enter sector to build.'):'Location ready, but elevation could not load. Terrain will be flat. Enter sector to build.',!next.terrain.real);return true;
  }catch(e){status(e.name==='AbortError'?'Map request timed out. Try again.':e.message,true);return false;}finally{clearTimeout(timer);if(id===requestId)setLoading(false);}}
 function insetBox(){if(!mapRight||$('fp-frame').hidden)return null;const area=$('fp-area').getBoundingClientRect(),canvas=renderer.domElement.getBoundingClientRect(),w=area.width,h=area.height;if(w<8||h<8||canvas.width<8)return null;return{left:area.left-canvas.left,bottom:canvas.bottom-area.bottom,width:w,height:h};}
@@ -195,8 +201,7 @@ function nearestTarget(){if(!assist)return null;let best=null,bestScore=.13;cons
 function update(dt){clock+=dt;player.cooldown=Math.max(0,player.cooldown-dt);if(player.reload>0){player.reload-=dt;if(player.reload<=0){player.reload=0;const w=weapons[player.weapon],n=Math.min(w.capacity-w.mag,w.reserve);w.mag+=n;w.reserve-=n;tone(600,.055,.04);updateHUD();}}
  if(Math.hypot(stick.aimX,stick.aimZ)>.1){player.angle+=stick.aimX*2.2*dt;setPitch(player.pitch-stick.aimZ*1.5*dt);}else if(viewMode==='2d'&&mouse.active){const mx=(mouse.x/width*2-1)*half*width/height,mz=(mouse.y/height*2-1)*half;player.angle=Math.atan2(mx,-mz);}if(keys.has('PageUp'))setPitch(player.pitch+dt);if(keys.has('PageDown'))setPitch(player.pitch-dt);
  const wantCrouch=keys.has('KeyC');
- const standClear=!blocked(player.x,player.z,map.buildings,.5,{fences:map.fences,trees:map.trees,y:player.y,h:PLAYER_STAND});
- player.crouch=wantCrouch||!standClear;
+ player.crouch=wantCrouch||lowHeadroom(player.x,player.z,map.buildings,player.y,map.stairs);
  player.running=!player.crouch&&(keys.has('ShiftLeft')||keys.has('ShiftRight'));
  if(player.jumpQueued&&player.grounded){player.vy=7.2;player.grounded=false;player.crouch=false;}
  player.jumpQueued=false;
@@ -256,7 +261,10 @@ function inspectView(){
   });
   return {id:b.id,area:r(b.area||0),levels:b.levels,height:r(b.height||0),base:r(b.base),low:r(b.low),storeys:(b.storeys||[]).map(r),playerInside:b===insideB,doors};
  });
- const stairs=(map.stairs||[]).filter(s=>Math.hypot((s.a.x+s.b.x)/2-player.x,(s.a.z+s.b.z)/2-player.z)<20).slice(0,6).map(s=>({y0:r(s.y0),y1:r(s.y1),width:r(s.width),rise:r(s.y1-s.y0),dist:r(Math.hypot((s.a.x+s.b.x)/2-player.x,(s.a.z+s.b.z)/2-player.z))}));
+ const stairs=(map.stairs||[]).map(s=>{
+  const dist=Math.hypot((s.a.x+s.b.x)/2-player.x,(s.a.z+s.b.z)/2-player.z);
+  return {s,dist};
+ }).filter(x=>x.dist<20).sort((a,b)=>a.dist-b.dist).slice(0,8).map(({s,dist})=>({y0:r(s.y0),y1:r(s.y1),width:r(s.width),rise:r(s.y1-s.y0),dist:r(dist)}));
  return {
   map:map.name,view:viewMode,
   player:{x:r(player.x),y:r(player.y),z:r(player.z),eyeY:r(a.y),angle:r(player.angle*180/Math.PI),pitch:r(player.pitch*180/Math.PI),ground:r(groundHere),feetMinusGround:r(player.y-groundHere)},
@@ -273,7 +281,16 @@ async function copyViewDump(){
  catch{window.prompt('Copy view dump',json);}
 }
 window.addEventListener('keydown',e=>{if(e.target.tagName==='INPUT')return;if(['KeyW','KeyA','KeyS','KeyD','ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space'].includes(e.code))e.preventDefault();if(e.code==='Escape'){e.preventDefault();if($('pause-dialog').open&&!ended)resume();else if(!$('map-dialog').open){if(map)openPause();else openMaps();}return;}if(!e.repeat&&e.code==='KeyF'&&map&&W){e.preventDefault();copyViewDump();return;}if(paused)return;keys.add(e.code);if(!e.repeat&&e.code==='KeyR')reload();if(!e.repeat&&e.code==='KeyQ')switchWeapon();if(!e.repeat&&e.code==='Space')player.jumpQueued=true;});window.addEventListener('keyup',e=>{keys.delete(e.code);});window.addEventListener('blur',()=>{clearInput();if(map&&!paused)openPause();});document.addEventListener('visibilitychange',()=>{if(document.hidden){clearInput();if(map&&!paused)openPause();}});
-$('map-form').addEventListener('submit',e=>{e.preventDefault();try{const [lat,lon]=coordinates($('location-input').value);$('photo-coords').value=`${lat}, ${lon}`;loadMap(lat,lon);}catch(err){status(err.message,true);}});$('photo-stage').onclick=()=>{try{parseScale($('photo-scale').value);coordinates($('photo-coords').value);$('photo-input').click();}catch(err){status(err.message,true);}};$('photo-input').addEventListener('change',e=>{const file=e.target.files?.[0];e.target.value='';if(file)loadPhotoStage(file);});$('maps').onclick=openMaps;$('pause-map').onclick=openMaps;$('close-map').onclick=()=>{if(!loading&&map)resume();};$('deploy').onclick=enterSector;$('pause').onclick=()=>{if(map)openPause();else openMaps();};$('resume').onclick=resume;$('restart').onclick=()=>{if(!map)return;startMap(map);$('pause-dialog').close();paused=false;};$('sound').onclick=()=>{soundOn=!soundOn;$('sound').textContent=soundOn?'Sound on':'Sound off';if(soundOn)unlockAudio();tone(400,.08,.05);};for(const id of ['map-dialog','pause-dialog'])$(id).addEventListener('cancel',e=>{e.preventDefault();if(!loading&&!ended&&map)resume();});
+$('map-form').addEventListener('submit',e=>{e.preventDefault();});
+function loadCoordinates(){try{const [lat,lon]=coordinates($('location-input').value);loadMap(lat,lon);}catch(err){status(err.message,true);}}
+$('load-map').onclick=loadCoordinates;
+$('location-input').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();loadCoordinates();}});
+$('info-toggle').onclick=()=>{const show=$('data-note').hidden;$('data-note').hidden=!show;$('info-toggle').setAttribute('aria-expanded',show?'true':'false');};
+$('summary-toggle').onclick=()=>{const open=$('map-summary').hidden;$('map-summary').hidden=!open;$('summary-toggle').setAttribute('aria-expanded',open?'true':'false');$('summary-toggle').querySelector('.collapse-mark').textContent=open?'–':'+';};
+$('photo-toggle').onclick=()=>{const open=$('photo-body').hidden;$('photo-body').hidden=!open;$('photo-toggle').setAttribute('aria-expanded',open?'true':'false');$('photo-route').classList.toggle('is-open',open);$('photo-toggle').querySelector('.collapse-mark').textContent=open?'–':'+';if(open)$('photo-scale').focus();};
+$('photo-stage').onclick=()=>{try{parseScale($('photo-scale').value);coordinates($('photo-coords').value);$('photo-input').click();}catch(err){status(err.message,true);}};
+for(const id of ['photo-scale','photo-coords'])$(id).addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();$('photo-stage').click();}});
+$('photo-input').addEventListener('change',e=>{const file=e.target.files?.[0];e.target.value='';if(file)loadPhotoStage(file);});$('maps').onclick=openMaps;$('pause-map').onclick=openMaps;$('close-map').onclick=()=>{if(!loading&&map)resume();};$('deploy').onclick=enterSector;$('pause').onclick=()=>{if(map)openPause();else openMaps();};$('resume').onclick=resume;$('restart').onclick=()=>{if(!map)return;startMap(map);$('pause-dialog').close();paused=false;};$('sound').onclick=()=>{soundOn=!soundOn;$('sound').textContent=soundOn?'Sound on':'Sound off';if(soundOn)unlockAudio();tone(400,.08,.05);};for(const id of ['map-dialog','pause-dialog'])$(id).addEventListener('cancel',e=>{e.preventDefault();if(!loading&&!ended&&map)resume();});
 // Optional browser agent tools use exactly the same visible actions and state.
 if(document.modelContext?.registerTool){const life=new AbortController();for(const tool of [{name:'read_game_state',description:'Read current map provenance, terrain availability, health and remaining enemies.',inputSchema:{type:'object',properties:{},additionalProperties:false},annotations:{readOnlyHint:true},execute:()=>({map:map?.name,coordinates:map?.real?[map.lat,map.lon]:null,realGeometry:map?.real,realElevation:map?.terrain?.real,paused,health:player.hp,remaining:enemies.filter(e=>e.hp>0).length})},{name:'load_game_location',description:'Pause the game and load a real map by coordinates. Keeps map selection open for the player to enter.',inputSchema:{type:'object',properties:{latitude:{type:'number',minimum:-80,maximum:80},longitude:{type:'number',minimum:-180,maximum:180}},required:['latitude','longitude'],additionalProperties:false},annotations:{readOnlyHint:false},execute:async input=>{const [lat,lon]=coordinates(`${input.latitude},${input.longitude}`);if(loading)throw Error('A map is already loading.');openMaps();$('location-input').value=`${lat}, ${lon}`;$('photo-coords').value=`${lat}, ${lon}`;const ok=await loadMap(lat,lon);if(!ok)throw Error($('map-status').textContent);return {ready:true,name:pending?.name,buildings:pending?.buildings.length,realElevation:pending?.terrain?.real,note:'Enter sector to generate the playground'};}}]){try{Promise.resolve(document.modelContext.registerTool(tool,{signal:life.signal})).catch(()=>{});}catch{}}window.addEventListener('pagehide',()=>life.abort(),{once:true});}
 $('view-mode').onclick=$('swap-inset').onclick=()=>setView(viewMode==='2d'?'3d':'2d');$('help-toggle').onclick=toggleHelp;$('assist-toggle').onclick=toggleAssist;$('pitch-control').addEventListener('input',e=>setPitch(Number(e.target.value)*Math.PI/180));$('level-aim').onclick=()=>setPitch(0);$('fire-button').addEventListener('pointerdown',e=>{if(paused)return;e.preventDefault();player.shooting=true;$('fire-button').setPointerCapture(e.pointerId);});for(const type of ['pointerup','pointercancel','lostpointercapture'])$('fire-button').addEventListener(type,()=>player.shooting=false);$('zoom-button').addEventListener('pointerdown',e=>{e.preventDefault();e.stopPropagation();if(paused)return;if(!canAds()){notify('Scope is AR-15 only');return;}setAds(!adsWant);});$('switch-button').addEventListener('pointerdown',e=>{e.preventDefault();e.stopPropagation();switchWeapon();});$('jump-button').addEventListener('pointerdown',e=>{e.preventDefault();e.stopPropagation();if(paused)return;player.jumpQueued=true;});$('phone-map').addEventListener('pointerdown',e=>{e.preventDefault();e.stopPropagation();if(paused)return;setMapRight(true);});$('close-inset').addEventListener('pointerdown',e=>{e.preventDefault();e.stopPropagation();setMapRight(false);});window.addEventListener('keydown',e=>{if(e.repeat||e.target.tagName==='INPUT')return;if(e.code==='KeyV')setView(viewMode==='2d'?'3d':'2d');if(e.code==='KeyJ'||e.code==='KeyH')toggleAssist();if(e.code==='KeyN'){e.preventDefault();setMapLeft();}if(e.code==='KeyM'){e.preventDefault();setMapRight();}if(e.code==='KeyP'){e.preventDefault();togglePhone();}if(e.key==='?'||e.code==='Slash'){e.preventDefault();toggleHelp();}});document.addEventListener('pointerlockchange',()=>{if(!document.pointerLockElement&&viewMode==='3d'&&!paused&&map)openPause();});

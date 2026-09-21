@@ -1,5 +1,5 @@
 import * as T from './three.module.js';
-import {inside,segmentDistance,closedRing,polygonArea,standHeight,STEP_UP,pullRingOffRoads,FLOOR_SLAB} from './map-model.js?v=ground-v3';
+import {inside,segmentDistance,closedRing,polygonArea,standHeight,STEP_UP,pullRingOffRoads,FLOOR_SLAB} from './map-model.js?v=well-v8';
 import {mergeGeometries} from './BufferGeometryUtils.js';
 const V=(x,y,z)=>new T.Vector3(x,y,z);
 const mat=(color,extra={})=>new T.MeshStandardMaterial({color,roughness:.95,...extra});
@@ -143,6 +143,7 @@ function addYards(scene,map,height){
 function addFences(scene,map,surface){
  const postMat=mat(0x3c3830),railMat=mat(0x4d473c),hedgeMat=mat(0x3a5c33),wallMat=mat(0x8b8676);
  const posts=[],rails=[],hedges=[],walls=[];
+ const inHouse=(x,z)=>(map.buildings||[]).some(b=>x>=b.minX&&x<=b.maxX&&z>=b.minZ&&z<=b.maxZ&&b.points&&inside(x,z,b.points));
  for(const f of map.fences||[]){
   const hedge=f.kind==='hedge',masonry=f.kind==='wall'||f.kind==='retaining_wall'||f.kind==='city_wall';
   for(let i=1;i<f.points.length;i++){
@@ -154,13 +155,16 @@ function addFences(scene,map,surface){
     const sl=(t1-t0)*len;if(sl<.18)continue;
     const steps=Math.max(1,Math.ceil(sl/2.1));
     for(let s=0;s<=steps;s++){
-     const t=t0+(t1-t0)*s/steps,x=a.x+dx*t,z=a.z+dz*t,y=surface(x,z);
+     const t=t0+(t1-t0)*s/steps,x=a.x+dx*t,z=a.z+dz*t;
+     if(inHouse(x,z))continue;
+     const y=surface(x,z);
      if(!hedge){
       const pg=new T.BoxGeometry(.07,f.height,.07);pg.translate(x,y+f.height/2,z);posts.push(pg);
      }
     }
     for(let s=0;s<steps;s++){
      const u0=t0+(t1-t0)*s/steps,u1=t0+(t1-t0)*(s+1)/steps,mx=a.x+dx*(u0+u1)/2,mz=a.z+dz*(u0+u1)/2;
+     if(inHouse(mx,mz))continue;
      const y=surface(mx,mz),seg=Math.hypot(dx*(u1-u0),dz*(u1-u0));
      if(hedge){
       const g=new T.BoxGeometry(seg,f.height,f.width||.38);g.rotateY(yaw);g.translate(mx,y+f.height/2,mz);hedges.push(g);
@@ -284,6 +288,52 @@ function railGeom(ax,ay,az,bx,by,bz){
  g.translate((ax+bx)/2,(ay+by)/2,(az+bz)/2);
  return g;
 }
+function addRailRun(ax,az,bx,bz,y,h,opts){
+ const dx=bx-ax,dz=bz-az,len=Math.hypot(dx,dz);
+ if(len<.12)return;
+ const posts=Math.max(2,Math.ceil(len/1.2));
+ for(let p=0;p<=posts;p++){
+  const t=p/posts,g=new T.BoxGeometry(.045,h,.045);
+  g.translate(ax+dx*t,y+h/2,az+dz*t);opts.rail.push(g);
+ }
+ opts.rail.push(railGeom(ax,y+h,az,bx,y+h,bz));
+}
+function pickFlightRailSides(from,to,w,well,foot,outdoor){
+ if(outdoor)return [-1,1];
+ const dx=to.x-from.x,dz=to.z-from.z,len=Math.hypot(dx,dz)||1;
+ const yaw=Math.atan2(-dz,dx),sx=Math.sin(yaw),cz=Math.cos(yaw);
+ const mx=(from.x+to.x)/2,mz=(from.z+to.z)/2;
+ const picked=[];
+ for(const side of [-1,1]){
+  const x=mx+side*(w/2+.12)*sx,z=mz+side*(w/2+.12)*cz;
+  const wellSide=well&&(inside(x,z,well)||well.some((q,i)=>segmentDistance(x,z,q,well[(i+1)%well.length])<.45));
+  const againstWall=foot&&wallDist(x,z,foot)<.5;
+  if(wellSide||!againstWall)picked.push(side);
+ }
+ return picked.length?picked:[-1,1];
+}
+function railAroundWell(well,y,built,foot,opts,clip){
+ if(!well||well.length<3||!opts?.rail)return;
+ const cx=well.reduce((s,p)=>s+p.x,0)/well.length,cz=well.reduce((s,p)=>s+p.z,0)/well.length;
+ const outset=clip?.outset??.08;
+ const near=clip?.near;
+ for(let i=0;i<well.length;i++){
+  const a=well[i],b=well[(i+1)%well.length],mx=(a.x+b.x)/2,mz=(a.z+b.z)/2;
+  if(near&&Math.hypot(mx-near.cx,mz-near.cz)>Math.max(near.depth,near.width)/2+.4)continue;
+  const ox=mx-cx,oz=mz-cz,oL=Math.hypot(ox,oz)||1;
+  const px=ox/oL*outset,pz=oz/oL*outset;
+  if(foot&&wallDist(mx+px,mz+pz,foot)<.4)continue;
+  const opening=(built||[]).some(s=>{
+   if(s.flat||Math.abs((s.y1??0)-(s.y0??0))<.05)return false;
+   const atStart=Math.abs(s.y0-y)<.22,atEnd=Math.abs(s.y1-y)<.22;
+   if(!atStart&&!atEnd)return false;
+   const end=atStart&&!atEnd?s.a:atEnd&&!atStart?s.b:Math.hypot(mx-s.a.x,mz-s.a.z)<Math.hypot(mx-s.b.x,mz-s.b.z)?s.a:s.b;
+   return Math.hypot(mx-end.x,mz-end.z)<(s.width||1.1)/2+.38;
+  });
+  if(opening)continue;
+  addRailRun(a.x+px,a.z+pz,b.x+px,b.z+pz,y,STAIR_RAIL_LANDING,opts);
+ }
+}
 function addStairFlight(from,to,fromY,toY,spec,opts={}){
  const dx=to.x-from.x,dz=to.z-from.z,len=Math.hypot(dx,dz)||1;
  const nx=dx/len,nz=dz/len,n=spec.n,H=spec.H,B=spec.B,w=spec.width,kind=spec.kind||'private';
@@ -297,15 +347,23 @@ function addStairFlight(from,to,fromY,toY,spec,opts={}){
   put(opts.stone,.04,H,w,i*B+.02,(i+.5)*H,0);
  }
  if(opts.cap!==false)put(opts.stone,.7,.07,w,run+.28,toY-fromY,0);
- for(const side of [-1,1]){
-  const lz=side*(w/2+.02),posts=Math.max(2,Math.ceil(run/1.2));
+ const sides=opts.sides||[-1,1];
+ const indoor=!!opts.indoor;
+ const rise=toY-fromY;
+ const soffit=(indoor&&opts.slabY!=null)?opts.slabY-fromY-FLOOR_SLAB:Infinity;
+ for(const side of sides){
+  const lz=side*(w/2+(indoor?-.05:.02)),posts=Math.max(2,Math.ceil(run/1.2));
+  let handA=null,handB=null;
   for(let p=0;p<=posts;p++){
-   const t=p/posts;
-   put(opts.rail,.045,STAIR_RAIL_FLIGHT,.045,t*run,t*(toY-fromY)+STAIR_RAIL_FLIGHT/2,lz);
+   const t=p/posts,ly=t*rise;
+   if(ly>=soffit-.02)continue;
+   const h=Math.max(.12,Math.min(STAIR_RAIL_FLIGHT,soffit-ly));
+   put(opts.rail,.045,h,.045,t*run,ly+h/2,lz);
+   const top=world(t*run,ly+h,lz);
+   if(!handA)handA=top;handB=top;
   }
-  const a=world(0,STAIR_RAIL_FLIGHT,lz),b=world(run,toY-fromY+STAIR_RAIL_FLIGHT,lz);
-  opts.rail.push(railGeom(a.x,a.y,a.z,b.x,b.y,b.z));
-  if(opts.cap!==false)put(opts.rail,.045,STAIR_RAIL_LANDING,.045,run,toY-fromY+STAIR_RAIL_LANDING/2,lz);
+  if(handA&&handB)opts.rail.push(railGeom(handA.x,handA.y,handA.z,handB.x,handB.y,handB.z));
+  if(opts.cap!==false)put(opts.rail,.045,STAIR_RAIL_LANDING,.045,run,rise+STAIR_RAIL_LANDING/2,lz);
  }
  return {a:start,b:to,width:w,y0:fromY,y1:toY,H,B,kind,n};
 }
@@ -313,11 +371,7 @@ function addEntryStairs(from,to,fromY,toY,opts={}){
  const dx=to.x-from.x,dz=to.z-from.z,len=Math.hypot(dx,dz)||1;
  const nx=dx/len,nz=dz/len,kind=opts.kind||'private';
  let bottomY=fromY;
- if(opts.height){
-  const guess=layoutStair(Math.max(.28,toY-bottomY),kind,opts.minWidth);
-  const probe={x:to.x-nx*guess.n*guess.B,z:to.z-nz*guess.n*guess.B};
-  bottomY=Math.min(toY-.28,opts.height(probe.x,probe.z));
- }
+ if(opts.height)bottomY=Math.min(toY-.28,fromY,opts.height(from.x,from.z));
  const rise=toY-bottomY;if(rise<.28||rise>STOREY+.05)return null;
  const spec=layoutStair(rise,kind,opts.minWidth);
  return addStairFlight(from,to,bottomY,toY,spec,opts);
@@ -325,12 +379,21 @@ function addEntryStairs(from,to,fromY,toY,opts={}){
 function addStairLanding(cx,cz,ux,uz,px,pz,depth,width,y,opts){
  const yaw=Math.atan2(-uz,ux);
  const g=new T.BoxGeometry(depth,.07,width);g.rotateY(yaw);g.translate(cx,y+.035,cz);opts.stone.push(g);
- for(const side of [-1,1]){
-  const lx=cx+px*side*(width/2+.02),lz=cz+pz*side*(width/2+.02);
-  const ax=lx-ux*depth/2,az=lz-uz*depth/2,bx=lx+ux*depth/2,bz=lz+uz*depth/2;
-  const post=new T.BoxGeometry(.045,STAIR_RAIL_LANDING,.045);post.translate(ax,y+STAIR_RAIL_LANDING/2,az);opts.rail.push(post);
-  const post2=new T.BoxGeometry(.045,STAIR_RAIL_LANDING,.045);post2.translate(bx,y+STAIR_RAIL_LANDING/2,bz);opts.rail.push(post2);
-  opts.rail.push(railGeom(ax,y+STAIR_RAIL_LANDING,az,bx,y+STAIR_RAIL_LANDING,bz));
+ if(opts.edgeRails!==false){
+  const open=opts.open||{};
+  const pt=(u,v)=>({x:cx+ux*u+px*v,z:cz+uz*u+pz*v});
+  const edges=[
+   {skip:open.v0,a:pt(-depth/2,-width/2),b:pt(depth/2,-width/2)},
+   {skip:open.v1,a:pt(-depth/2,width/2),b:pt(depth/2,width/2)},
+   {skip:open.u0,a:pt(-depth/2,-width/2),b:pt(-depth/2,width/2)},
+   {skip:open.u1,a:pt(depth/2,-width/2),b:pt(depth/2,width/2)}
+  ];
+  for(const e of edges){
+   if(e.skip)continue;
+   const mx=(e.a.x+e.b.x)/2,mz=(e.a.z+e.b.z)/2;
+   if(opts.footprint&&wallDist(mx,mz,opts.footprint)<.45)continue;
+   addRailRun(e.a.x,e.a.z,e.b.x,e.b.z,y,STAIR_RAIL_LANDING,opts);
+  }
  }
  const a={x:cx-ux*depth/2,z:cz-uz*depth/2},b={x:cx+ux*depth/2,z:cz+uz*depth/2};
  return {a,b,width,y0:y,y1:y,H:.16,B:.3,kind:opts.kind||'private',n:0,flat:true};
@@ -362,53 +425,108 @@ function stairWellPath(s){
   {x:s.a.x+ux*len*t0-px*w,z:s.a.z+uz*len*t0-pz*w}
  ]);
 }
-function floorSlab(points,y,holes){
+function shapeArea(pts){
+ let a=0;
+ for(let i=0,j=pts.length-1;i<pts.length;j=i++)a+=pts[j].x*pts[i].y-pts[i].x*pts[j].y;
+ return a;
+}
+function makePath(pts){
+ const path=new T.Path();
+ path.moveTo(pts[0].x,pts[0].y);
+ for(let i=1;i<pts.length;i++)path.lineTo(pts[i].x,pts[i].y);
+ path.closePath();
+ return path;
+}
+function xzToShape(ring){return ring.map(q=>({x:q.x,y:-q.z}));}
+function holePath(pts,outer){
+ if(!pts||pts.length<3)return null;
+ const cx=pts.reduce((s,p)=>s+p.x,0)/pts.length,cz=pts.reduce((s,p)=>s+p.z,0)/pts.length;
+ const inset=pts.map(p=>{
+  const dx=cx-p.x,dz=cz-p.z,L=Math.hypot(dx,dz)||1;
+  let x=p.x+dx/L*.02,z=p.z+dz/L*.02;
+  if(outer)for(let k=0;k<6&&!inside(x,z,outer);k++){x+=dx/L*.06;z+=dz/L*.06;}
+  return {x,z};
+ });
+ if(outer&&inset.some(q=>!inside(q.x,q.z,outer)))return null;
+ const sp=xzToShape(inset);
+ const outerA=outer?shapeArea(xzToShape(outer)):1;
+ if(shapeArea(sp)*outerA>0)sp.reverse();
+ return makePath(sp);
+}
+function extrudeSlab(points,y,holes){
  const shape=new T.Shape(points.map(q=>new T.Vector2(q.x,-q.z)));
  for(const hole of holes||[])shape.holes.push(hole);
  const g=new T.ExtrudeGeometry(shape,{depth:FLOOR_SLAB,bevelEnabled:false});
- g.rotateX(-Math.PI/2);g.translate(0,y,0);
+ g.rotateX(-Math.PI/2);g.translate(0,y-FLOOR_SLAB,0);
  return g;
 }
-function planStraight(o,ux,uz,px,pz,spec,ns){
- const n=ns[0],w=spec.width,run=n*spec.B,exit=Math.min(STAIR_LANDING_RUN,Math.max(.9,run*.35));
- const foot=localCorners(o,ux,uz,px,pz,0,run,-w/2,w/2);
- const hole=localCorners(o,ux,uz,px,pz,0,Math.max(.2,run-exit),-w/2,w/2);
+function reversePath(hole){
+ const pts=hole.getPoints();if(pts.length<3)return hole;
+ pts.reverse();
+ return makePath(pts.map(p=>({x:p.x,y:p.y})));
+}
+function floorSlab(points,y,holes){
+ const list=(holes||[]).filter(Boolean);
+ const tryMake=hs=>{
+  const g=extrudeSlab(points,y,hs);
+  if(!g?.getAttribute?.('position')){g?.dispose?.();throw new Error('empty slab');}
+  return g;
+ };
+ try{return tryMake(list);}catch{}
+ try{return tryMake(list.map(reversePath));}catch{}
+ const kept=[];
+ for(const hole of list){
+  const candidates=[hole,reversePath(hole)];
+  let added=false;
+  for(const c of candidates){
+   try{const g=tryMake([...kept,c]);g.dispose();kept.push(c);added=true;break;}catch{}
+  }
+  if(!added)continue;
+ }
+ try{return tryMake(kept);}catch{return tryMake([]);}
+}
+function planStraight(o,ux,uz,px,pz,spec,ns,exitRun=STAIR_LANDING_RUN){
+ const n=ns[0],w=spec.width,run=n*spec.B,exit=Math.max(.9,exitRun),hw=w/2;
+ const foot=localCorners(o,ux,uz,px,pz,0,run+exit,-hw,hw);
+ const hole=localCorners(o,ux,uz,px,pz,.02,run+.14,-hw+.02,hw-.02);
  const from={x:o.x,z:o.z},to={x:o.x+ux*run,z:o.z+uz*run};
- const land={cx:o.x+ux*(run-exit/2),cz:o.z+uz*(run-exit/2),depth:exit,width:w,ux,uz,px,pz};
+ const land={cx:o.x+ux*(run+exit/2),cz:o.z+uz*(run+exit/2),depth:exit,width:w,ux,uz,px,pz,open:{u0:true}};
  return {fold:'straight',pts:foot,well:hole,flights:[{from,to,n,cap:true}],landings:[],exits:[land],holes:[hole]};
 }
-function planU(o,ux,uz,px,pz,spec,ns){
+function planU(o,ux,uz,px,pz,spec,ns,exitRun=STAIR_LANDING_RUN){
  const w=spec.width,B=spec.B,gap=.16,n1=ns[0],n2=ns[1]||ns[0];
- const run1=n1*B,run2=n2*B,landU=Math.max(run1,run2),landD=Math.max(w,.9),span=2*w+gap;
- const exit=STAIR_LANDING_RUN;
+ const run1=n1*B,run2=n2*B,exit=Math.max(.9,exitRun),landU=Math.max(run1,run2+exit),landD=Math.max(w,.9),span=2*w+gap;
  const foot=localCorners(o,ux,uz,px,pz,0,landU+landD,0,span);
- const hole=localCorners(o,ux,uz,px,pz,exit,landU+landD,0,span);
+ const hole=localCorners(o,ux,uz,px,pz,exit-.14,landU+landD-.02,.02,span-.02);
  const v1=w/2,v2=w+gap+w/2;
  const f1from={x:o.x+ux*(landU-run1)+px*v1,z:o.z+uz*(landU-run1)+pz*v1};
  const f1to={x:o.x+ux*landU+px*v1,z:o.z+uz*landU+pz*v1};
  const f2from={x:o.x+ux*landU+px*v2,z:o.z+uz*landU+pz*v2};
- const f2to={x:o.x+ux*(landU-run2)+px*v2,z:o.z+uz*(landU-run2)+pz*v2};
- const land={cx:o.x+ux*(landU+landD/2)+px*(span/2),cz:o.z+uz*(landU+landD/2)+pz*(span/2),depth:landD,width:span,ux,uz,px,pz};
- const out={cx:o.x+ux*(exit/2)+px*(span/2),cz:o.z+uz*(exit/2)+pz*(span/2),depth:exit,width:span,ux,uz,px,pz};
- const h1=localCorners(o,ux,uz,px,pz,Math.max(exit,landU-run1),landU,0,w);
- const h2=localCorners(o,ux,uz,px,pz,Math.max(exit,landU-run2),landU,w+gap,span);
- const hl=localCorners(o,ux,uz,px,pz,landU,landU+landD,0,span);
- return {fold:'U',pts:foot,well:hole,flights:[{from:f1from,to:f1to,n:n1,cap:false},{from:f2from,to:f2to,n:n2,cap:false}],landings:[land],exits:[out],holes:[h1,h2,hl]};
+ const f2to={x:o.x+ux*exit+px*v2,z:o.z+uz*exit+pz*v2};
+ const land={cx:o.x+ux*(landU+landD/2)+px*(span/2),cz:o.z+uz*(landU+landD/2)+pz*(span/2),depth:landD,width:span,ux,uz,px,pz,open:{u0:true}};
+ const out={cx:o.x+ux*(exit/2)+px*(span/2),cz:o.z+uz*(exit/2)+pz*(span/2),depth:exit,width:span,ux,uz,px,pz,open:{u1:true}};
+ return {fold:'U',pts:foot,well:hole,flights:[{from:f1from,to:f1to,n:n1,cap:false},{from:f2from,to:f2to,n:n2,cap:false}],landings:[land],exits:[out],holes:[hole]};
 }
-function planL(o,ux,uz,px,pz,spec,ns){
+function planL(o,ux,uz,px,pz,spec,ns,exitRun=STAIR_LANDING_RUN){
  const w=spec.width,B=spec.B,n1=ns[0],n2=ns[1]||ns[0],run1=n1*B,run2=n2*B,land=Math.max(w,STAIR_LANDING_RUN);
- const foot=localCorners(o,ux,uz,px,pz,0,run1+land,0,w+run2);
- const hole=localCorners(o,ux,uz,px,pz,0,run1+land,0,w+Math.max(0,run2-STAIR_LANDING_RUN));
+ const exit=Math.max(.9,exitRun);
+ const foot=localCorners(o,ux,uz,px,pz,0,run1+land,0,w+run2+exit);
+ const u0=.02,u1=run1+land-.02,v0=.02,v1=w-.02,v2=w+run2+.14,uInner=run1+.02;
+ const hole=[
+  {x:o.x+ux*u0+px*v0,z:o.z+uz*u0+pz*v0},
+  {x:o.x+ux*u1+px*v0,z:o.z+uz*u1+pz*v0},
+  {x:o.x+ux*u1+px*v2,z:o.z+uz*u1+pz*v2},
+  {x:o.x+ux*uInner+px*v2,z:o.z+uz*uInner+pz*v2},
+  {x:o.x+ux*uInner+px*v1,z:o.z+uz*uInner+pz*v1},
+  {x:o.x+ux*u0+px*v1,z:o.z+uz*u0+pz*v1}
+ ];
  const f1from={x:o.x+px*(w/2),z:o.z+pz*(w/2)};
  const f1to={x:o.x+ux*run1+px*(w/2),z:o.z+uz*run1+pz*(w/2)};
  const f2from={x:o.x+ux*(run1+land/2)+px*w,z:o.z+uz*(run1+land/2)+pz*w};
  const f2to={x:o.x+ux*(run1+land/2)+px*(w+run2),z:o.z+uz*(run1+land/2)+pz*(w+run2)};
- const landC={cx:o.x+ux*(run1+land/2)+px*(land/2),cz:o.z+uz*(run1+land/2)+pz*(land/2),depth:land,width:land,ux,uz,px,pz};
- const out={cx:o.x+ux*(run1+land/2)+px*(w+run2-STAIR_LANDING_RUN/2),cz:o.z+uz*(run1+land/2)+pz*(w+run2-STAIR_LANDING_RUN/2),depth:w,width:STAIR_LANDING_RUN,ux:px,uz:pz,px:ux,pz:uz};
- const h1=localCorners(o,ux,uz,px,pz,0,run1,0,w);
- const hl=localCorners(o,ux,uz,px,pz,run1,run1+land,0,land);
- const h2=localCorners(o,ux,uz,px,pz,run1,run1+land,w,w+Math.max(.2,run2-STAIR_LANDING_RUN));
- return {fold:'L',pts:foot,well:hole,flights:[{from:f1from,to:f1to,n:n1,cap:false},{from:f2from,to:f2to,n:n2,cap:false}],landings:[landC],exits:[out],holes:[h1,hl,h2]};
+ const landC={cx:o.x+ux*(run1+land/2)+px*(land/2),cz:o.z+uz*(run1+land/2)+pz*(land/2),depth:land,width:land,ux,uz,px,pz,open:{u0:true,v1:true}};
+ const out={cx:o.x+ux*(run1+land/2)+px*(w+run2+exit/2),cz:o.z+uz*(run1+land/2)+pz*(w+run2+exit/2),depth:exit,width:w,ux:px,uz:pz,px:ux,pz:uz,open:{u0:true}};
+ return {fold:'L',pts:foot,well:hole,flights:[{from:f1from,to:f1to,n:n1,cap:false},{from:f2from,to:f2to,n:n2,cap:false}],landings:[landC],exits:[out],holes:[hole]};
 }
 function chooseFold(b,n,run,span){
  if(n<STAIR_FLIGHT_MIN*2)return 'straight';
@@ -428,11 +546,29 @@ function flightsForFold(n,fold,kind,H){
  if(b<STAIR_FLIGHT_MIN||b>STAIR_FLIGHT_MAX)return splitFlights(n,kind,H);
  return [a,b];
 }
-function tryPlan(p,o,ux,uz,px,pz,spec,fold){
+function tryPlan(p,o,ux,uz,px,pz,spec,fold,minClear=0,exitRun=STAIR_LANDING_RUN){
  const ns=flightsForFold(spec.n,fold,spec.kind,spec.H);
- const plan=fold==='straight'&&ns.length===1?planStraight(o,ux,uz,px,pz,spec,ns):fold==='L'?planL(o,ux,uz,px,pz,spec,ns):planU(o,ux,uz,px,pz,spec,ns);
+ const plan=fold==='straight'&&ns.length===1?planStraight(o,ux,uz,px,pz,spec,ns,exitRun):fold==='L'?planL(o,ux,uz,px,pz,spec,ns,exitRun):planU(o,ux,uz,px,pz,spec,ns,exitRun);
  if(!plan||!plan.pts.every(q=>inside(q.x,q.z,p)))return null;
+ if(minClear>0&&!stairWalkClear(plan,p,minClear))return null;
  return plan;
+}
+function wallDist(x,z,p){
+ let best=Infinity;
+ for(let i=0;i<p.length;i++)best=Math.min(best,segmentDistance(x,z,p[i],p[(i+1)%p.length]));
+ return best;
+}
+function stairWalkClear(plan,p,clear){
+ const spots=[];
+ for(const f of plan.flights||[]){
+  const dx=f.to.x-f.from.x,dz=f.to.z-f.from.z,len=Math.hypot(dx,dz)||1;
+  spots.push(f.from,f.to,{x:(f.from.x+f.to.x)/2,z:(f.from.z+f.to.z)/2});
+  spots.push({x:f.from.x-dx/len*.85,z:f.from.z-dz/len*.85});
+ }
+ for(const q of spots){
+  if(!inside(q.x,q.z,p)||wallDist(q.x,q.z,p)<clear)return false;
+ }
+ return true;
 }
 function inEntranceLobby(x,z,door,depth){
  if(!door)return false;
@@ -453,45 +589,52 @@ function placeInteriorPlan(p,edges,spec,b,door){
  const preferred=chooseFold(b,spec.n,spec.n*spec.B,span);
  const order=[preferred,'U','L','straight'].filter((f,i,a)=>a.indexOf(f)===i);
  const depths=b.area>=80?[1.8,1.45,1.15]:[1.45,1.15,.95];
+ const insets=b.area>=80?[.95,.78,.58]:[.78,.58,.45];
+ const clears=b.area>=80?[.82,.64,0]:[.64,0];
+ const exits=b.area>=80?[STAIR_LANDING_RUN,.95]:[STAIR_LANDING_RUN,.9];
  const ranked=edges.map((e,i)=>({e,i,door:door&&i===door.i})).sort((a,b)=>a.door-b.door);
- for(const depth of depths)for(const fold of order)for(const {e,i,door:onDoor}of ranked){
+ for(const minClear of clears)for(const inset of insets)for(const depth of depths)for(const exitRun of exits)for(const fold of order)for(const {e,i,door:onDoor}of ranked){
   const ax=e.dx/e.len,az=e.dz/e.len,px=-e.nx,pz=-e.nz;
-  for(const t of [.12,.28,.5,.72,.88]){
+  for(const t of [.18,.32,.5,.68,.82]){
    if(onDoor&&door){
     const along=t*e.len,doorMid=door.doorX!=null?door.doorX+(door.w||1.72)/2:e.len/2;
     if(Math.abs(along-doorMid)<depth+1.1)continue;
    }
    for(const sign of [1,-1]){
-    const o={x:e.a.x+ax*e.len*t+px*.42,z:e.a.z+az*e.len*t+pz*.42};
-    const plan=tryPlan(p,o,ax*sign,az*sign,px,pz,spec,fold);
+    const o={x:e.a.x+ax*e.len*t+px*inset,z:e.a.z+az*e.len*t+pz*inset};
+    const plan=tryPlan(p,o,ax*sign,az*sign,px,pz,spec,fold,minClear,exitRun);
     if(plan&&planClearsLobby(plan,door,depth))return plan;
    }
   }
  }
  return null;
 }
-function markWell(s,well,wellY0,wellY1,fold){
- s.well=well;s.wellY0=wellY0;s.wellY1=wellY1;s.fold=fold;return s;
+function markWell(s,well,wellY0,wellY1,fold,holes){
+ s.well=well;s.wellY0=wellY0;s.wellY1=wellY1;s.fold=fold;s.holes=holes;return s;
 }
 function buildInteriorStairs(p,plan,y0,y1,spec,opts){
  const H=spec.H,built=[];
  let y=y0;
- const well=plan.well||plan.pts,wellY0=y0,wellY1=y1;
+ const well=plan.well||plan.pts,holes=plan.holes||[well],wellY0=y0,wellY1=y1;
+ const railOpts={...opts,footprint:p,edgeRails:false};
  for(let i=0;i<plan.flights.length;i++){
   const f=plan.flights[i],n=f.n,yTop=y+n*H;
-  const stair=addStairFlight(f.from,f.to,y,Math.min(y1,yTop),{...spec,n},{...opts,cap:f.cap});
-  if(stair)built.push(markWell(stair,well,wellY0,wellY1,plan.fold));
+  const sides=pickFlightRailSides(f.from,f.to,spec.width,well,p,false);
+  const stair=addStairFlight(f.from,f.to,y,Math.min(y1,yTop),{...spec,n},{...opts,cap:f.cap,sides,indoor:true,slabY:y1});
+  if(stair)built.push(markWell(stair,well,wellY0,wellY1,plan.fold,holes));
   if(plan.landings[i]){
    const L=plan.landings[i];
-   const land=addStairLanding(L.cx,L.cz,L.ux,L.uz,L.px,L.pz,L.depth,L.width,yTop,opts);
-   built.push(markWell(land,well,wellY0,wellY1,plan.fold));
+   const land=addStairLanding(L.cx,L.cz,L.ux,L.uz,L.px,L.pz,L.depth,L.width,yTop,{...railOpts,open:L.open});
+   built.push(markWell(land,well,wellY0,wellY1,plan.fold,holes));
+   railAroundWell(well,yTop,built,p,opts,{near:L,outset:.06});
   }
   y=yTop;
  }
  for(const L of plan.exits||[]){
-  const land=addStairLanding(L.cx,L.cz,L.ux,L.uz,L.px,L.pz,L.depth,L.width,y1,opts);
-  built.push(markWell(land,well,wellY0,wellY1,plan.fold));
+  const land=addStairLanding(L.cx,L.cz,L.ux,L.uz,L.px,L.pz,L.depth,L.width,y1,{...railOpts,open:L.open});
+  built.push(markWell(land,well,wellY0,wellY1,plan.fold,holes));
  }
+ railAroundWell(well,y1,built,p,opts,{outset:.1});
  return built;
 }
 function lotRing(b,fences){
@@ -542,16 +685,63 @@ function otherClearance(x,z,buildings,skipId){
  }
  return best;
 }
+function fenceClearance(x,z,fences){
+ let best=Infinity;
+ for(const f of fences||[]){
+  const thick=(f.width||.08)/2,pts=f.points,open=f.opening;
+  if(!pts||pts.length<2)continue;
+  for(let i=1;i<pts.length;i++){
+   const a=pts[i-1],b=pts[i];
+   if(open&&open.i===i){
+    const dx=b.x-a.x,dz=b.z-a.z;
+    const p0={x:a.x+dx*open.t0,z:a.z+dz*open.t0},p1={x:a.x+dx*open.t1,z:a.z+dz*open.t1};
+    best=Math.min(best,segmentDistance(x,z,a,p0)-thick,segmentDistance(x,z,p1,b)-thick);
+    continue;
+   }
+   best=Math.min(best,segmentDistance(x,z,a,b)-thick);
+  }
+ }
+ return best;
+}
+function cutFenceGate(fences,mid,nx,nz,width,depth){
+ const px=-nz,pz=nx,hw=Math.max(.7,(width||1.72)/2+.28),reach=Math.max(2.2,depth||2.6);
+ for(const f of fences||[]){
+  const pts=f.points;if(!pts||pts.length<2)continue;
+  let bestI=-1,bestT=.5,bestD=Infinity;
+  for(let i=1;i<pts.length;i++){
+   const a=pts[i-1],b=pts[i],len=Math.hypot(b.x-a.x,b.z-a.z)||1;
+   const steps=Math.max(2,Math.ceil(len/.35));
+   for(let k=0;k<=steps;k++){
+    const t=k/steps,x=a.x+(b.x-a.x)*t,z=a.z+(b.z-a.z)*t;
+    const along=(x-mid.x)*nx+(z-mid.z)*nz,lat=Math.abs((x-mid.x)*px+(z-mid.z)*pz);
+    if(along>-.2&&along<reach&&lat<hw+.2){
+     const d=Math.hypot(x-mid.x,z-mid.z);
+     if(d<bestD){bestD=d;bestI=i;bestT=t;}
+    }
+   }
+  }
+  if(bestI<0)continue;
+  const a=pts[bestI-1],b=pts[bestI],len=Math.hypot(b.x-a.x,b.z-a.z)||1;
+  const half=Math.min(1.2,Math.max(.85,(width||1.72)/2+.4),len*.48);
+  const t0=Math.max(0,bestT-half/len),t1=Math.min(1,bestT+half/len);
+  if(t1-t0<.45)continue;
+  if(f.opening&&f.opening.i===bestI){
+   f.opening.t0=Math.min(f.opening.t0,t0);
+   f.opening.t1=Math.max(f.opening.t1,t1);
+  }else f.opening={i:bestI,t0,t1};
+ }
+}
 const APPROACH_WALK=.9;
-function corridorClearance(mid,nx,nz,width,depth,buildings,skipId){
+function corridorClearance(mid,nx,nz,width,depth,buildings,skipId,fences){
  const px=-nz,pz=nx,hw=Math.max(.4,(width||1.72)/2+.08);
  let min=Infinity;
  const reach=Math.max(APPROACH_WALK,depth||APPROACH_WALK);
  const step=Math.max(.3,reach/8);
  for(let along=.12;along<=reach+.001;along+=step){
   for(const lat of [-hw,0,hw]){
-   min=Math.min(min,otherClearance(mid.x+nx*along+px*lat,mid.z+nz*along+pz*lat,buildings,skipId));
-   if(min<=0)return 0;
+   const x=mid.x+nx*along+px*lat,z=mid.z+nz*along+pz*lat;
+   min=Math.min(min,otherClearance(x,z,buildings,skipId),fenceClearance(x,z,fences));
+   if(min<=.32)return 0;
   }
  }
  return min;
@@ -561,23 +751,23 @@ function approachDepth(rise,doorW){
  const spec=layoutStair(rise,'public_outdoor',doorW);
  return spec.n*spec.B+APPROACH_WALK;
 }
-function scoreDoorSlot(e,doorX,doorW,heightFn,buildings,skipId,floorHigh){
+function scoreDoorSlot(e,doorX,doorW,heightFn,buildings,skipId,floorHigh,fences){
  const t=(doorX+doorW/2)/e.len;
  const mid={x:e.a.x+e.dx*t,z:e.a.z+e.dz*t};
  const sidewalk=doorApproachY(e,t,heightFn);
  const rise=Math.max(0,floorHigh-sidewalk);
  const width=Math.max(doorW,stairWidthMin('public_outdoor'));
- const gap=corridorClearance(mid,e.nx,e.nz,width,approachDepth(rise,doorW),buildings,skipId);
+ const gap=corridorClearance(mid,e.nx,e.nz,width,approachDepth(rise,doorW),buildings,skipId,fences);
  return {doorX,mid,sidewalk,rise,gap,roadDist:e.roadDist,len:e.len};
 }
-function pickStreetEntrance(edges,doorW,heightFn,buildings,skipId,floorHigh){
+function pickStreetEntrance(edges,doorW,heightFn,buildings,skipId,floorHigh,fences){
  const slots=[];
  for(let i=0;i<edges.length;i++){
   const e=edges[i];
   if(e.len<=doorW+1.2)continue;
   const lo=.4,hi=e.len-doorW-.4;if(hi<lo)continue;
   const n=Math.max(1,Math.round((hi-lo)/.95));
-  for(let k=0;k<=n;k++)slots.push({i,...scoreDoorSlot(e,lo+(hi-lo)*(n?k/n:0),doorW,heightFn,buildings,skipId,floorHigh)});
+  for(let k=0;k<=n;k++)slots.push({i,...scoreDoorSlot(e,lo+(hi-lo)*(n?k/n:0),doorW,heightFn,buildings,skipId,floorHigh,fences)});
  }
  if(!slots.length)return {i:-1,doorX:0};
  const good=slots.filter(s=>s.gap>=APPROACH_WALK);
@@ -640,7 +830,7 @@ export function createWorld(map){
   b.storeys=[b.base];
   const doorH=(b.area<85&&(b.levels||1)<2)?1.4:2.12;
   let doorAt=-1,doorX=0,approachY=cornerLow;
-  const picked=pickStreetEntrance(edges,doorW,height,map.buildings,b.id,cornerHigh);
+  const picked=pickStreetEntrance(edges,doorW,height,map.buildings,b.id,cornerHigh,map.fences);
   if(picked.i>=0){doorAt=picked.i;doorX=picked.doorX;approachY=picked.sidewalk;}
   else{
    let bestLen=0;for(let i=0;i<edges.length;i++)if(edges[i].len>bestLen){bestLen=edges[i].len;doorAt=i;}
@@ -663,10 +853,10 @@ export function createWorld(map){
   if(doorAt>=0){
    const e=edges[doorAt],lo=.4,hi=e.len-doorW-.4;
    if(hi>=lo){
-    let best=scoreDoorSlot(e,doorX,doorW,height,map.buildings,b.id,entryY);
+    let best=scoreDoorSlot(e,doorX,doorW,height,map.buildings,b.id,entryY,map.fences);
     const n=Math.max(1,Math.round((hi-lo)/.8));
     for(let k=0;k<=n;k++){
-     const s=scoreDoorSlot(e,lo+(hi-lo)*(n?k/n:0),doorW,height,map.buildings,b.id,entryY);
+     const s=scoreDoorSlot(e,lo+(hi-lo)*(n?k/n:0),doorW,height,map.buildings,b.id,entryY,map.fences);
      if(s.gap>best.gap+.05&&Math.abs(s.sidewalk-approachY)<.35)best=s;
     }
     doorX=best.doorX;
@@ -708,17 +898,21 @@ export function createWorld(map){
   const wellAt=y=>{
    const seen=new Set(),holes=[];
    for(const s of wells){
-    if(!s.well||(s.wellY0??s.y0)+.05>=y||(s.wellY1??s.y1)+.02<y)continue;
-    const key=s.well.map(q=>`${q.x.toFixed(2)},${q.z.toFixed(2)}`).join('|');
-    if(seen.has(key))continue;seen.add(key);
-    holes.push(rectPath(s.well));
+    if((s.wellY0??s.y0)+.05>=y||(s.wellY1??s.y1)+.02<y)continue;
+    const polys=(s.holes&&s.holes.length)?s.holes:(s.well?[s.well]:[]);
+    for(const poly of polys){
+     const key=(poly||[]).map(q=>`${q.x.toFixed(2)},${q.z.toFixed(2)}`).join('|');
+     if(!key||seen.has(key))continue;seen.add(key);
+     const h=holePath(poly,p);
+     if(h)holes.push(h);
+    }
    }
    return holes;
   };
   const lowest=levelsY[0];
   for(const y of levelsY){
    if(y<=lowest+.05)continue;
-   try{floors.push(floorSlab(p,y,wellAt(y)));}catch{floors.push(floorSlab(p,y));}
+   floors.push(floorSlab(p,y,wellAt(y)));
   }
   const roofG=new T.ExtrudeGeometry(new T.Shape(p.map(q=>new T.Vector2(q.x,-q.z))),{depth:FLOOR_SLAB,bevelEnabled:false});roofG.rotateX(-Math.PI/2);roofG.translate(0,b.base+b.height,0);roofs.push(roofG);
   if(inside(cx,cz,p)&&b.area>80){
@@ -753,14 +947,25 @@ export function createWorld(map){
     b.doors.push({a:da,b:db,bottom:entryY,top:entryY+doorH,thick});
     addDoorFrame(e,doorX,doorW,doorH,entryY,thick,frames,leaves);
     const mid={x:(da.x+db.x)/2,z:(da.z+db.z)/2};
+    cutFenceGate(map.fences,mid,e.nx,e.nz,doorW,Math.max(2.6,approachDepth(Math.max(0,entryY-approachY),doorW)));
     const landingY=doorLandingY(mid,e,map,height);
     if(entryY-landingY>.45){
-     const startY=Math.min(entryY-.28,approachY-.03);
-     const rise=entryY-startY;
      const kind=stairKind(b,true),width=Math.max(doorW,stairWidthMin(kind));
-     if(rise>.45&&rise<=STOREY+.05&&corridorClearance(mid,e.nx,e.nz,width,approachDepth(rise,doorW),map.buildings,b.id)>0){
-      const hint={x:mid.x+e.nx*1.6,z:mid.z+e.nz*1.6};
-      const stair=addEntryStairs(hint,mid,startY,entryY,{kind,minWidth:doorW,stone,rail});
+     const surface=(x,z)=>standHeight(x,z,map.buildings,height(x,z),map.yards,[],null,map.roads);
+     let startY=Math.min(entryY-.28,landingY,approachY);
+     const guess=layoutStair(Math.max(.28,entryY-startY),kind,width);
+     const run0=guess.n*guess.B+.12;
+     for(const t of [1,.75,.45,.2]){
+      const x=mid.x+e.nx*run0*t,z=mid.z+e.nz*run0*t;
+      startY=Math.min(startY,surface(x,z),height(x,z));
+     }
+     startY=Math.max(startY,entryY-STOREY);
+     const rise=entryY-startY;
+     if(rise>.45&&corridorClearance(mid,e.nx,e.nz,width,Math.min(2.4,approachDepth(rise,doorW)),map.buildings,b.id,map.fences)>0){
+      const spec=layoutStair(rise,kind,width);
+      const from={x:mid.x+e.nx*(spec.n*spec.B+.08),z:mid.z+e.nz*(spec.n*spec.B+.08)};
+      const footY=Math.min(startY,surface(from.x,from.z),height(from.x,from.z));
+      const stair=addStairFlight(from,mid,Math.max(footY,entryY-STOREY),entryY,spec,{kind,stone,rail});
       if(stair)map.stairs.push(stair);
      }
     }
@@ -816,10 +1021,18 @@ export function createWorld(map){
  commit(leaves,leafMat,scene,walls,{cast:false,occlude:false});
  commit(stone,stoneMat,scene,walls,{cast:false,occlude:false});
  commit(rail,railMat,scene,walls,{cast:false,occlude:false});
- const surface=(x,z)=>standHeight(x,z,map.buildings,height(x,z),map.yards,map.stairs,null,map.roads);
+ const lotSurface=(x,z)=>{
+  let y=height(x,z);
+  for(const yard of map.yards||[]){
+   if(x<yard.minX-.4||x>yard.maxX+.4||z<yard.minZ-.4||z>yard.maxZ+.4)continue;
+   const ring=yard.points;
+   if(inside(x,z,ring)||ring.some((p,i)=>segmentDistance(x,z,p,ring[(i+1)%ring.length])<.35))y=Math.max(y,yard.top);
+  }
+  return y;
+ };
  addYards(scene,map,height);
- addFences(scene,map,surface);
- addTrees(scene,map,surface);
+ addFences(scene,map,lotSurface);
+ addTrees(scene,map,lotSurface);
  // A subtle boundary keeps players within the actually downloaded area.
  const edgePoints=[];for(let i=0;i<=64;i++){const a=i/64*Math.PI*2,x=Math.cos(a)*map.radius,z=Math.sin(a)*map.radius;edgePoints.push(V(x,height(x,z)+.2,z));}scene.add(new T.Line(new T.BufferGeometry().setFromPoints(edgePoints),new T.LineBasicMaterial({color:0xd9e58e,transparent:true,opacity:.4})));
  scene.updateMatrixWorld(true);
