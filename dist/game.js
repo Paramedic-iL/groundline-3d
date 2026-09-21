@@ -1,7 +1,7 @@
 import * as T from './three.module.js';
-import {INITIAL,LOCATIONS,coordinates,convert,fromXML,blocked,standHeight,ceilingAt,lowHeadroom,inWellVoid,STEP_UP,PLAYER_STAND,PLAYER_CROUCH,inside} from './map-model.js?v=well-v8';
+import {INITIAL,LOCATIONS,coordinates,convert,fromXML,blocked,standHeight,ceilingAt,lowHeadroom,inWellVoid,STEP_UP,PLAYER_STAND,PLAYER_CROUCH,inside} from './map-model.js?v=well-v16';
 import {FLAT,loadTerrain} from './terrain.js';
-import {createWorld,person,disposeWorld} from './world.js?v=well-v8';
+import {createWorld,person,disposeWorld} from './world.js?v=well-v16';
 import {facingMovement,lookVector,clampPitch} from './controls.js';
 import {SatelliteMap,loadSatelliteCoverage,coverageFromPhoto,drapePhotoOnCoverage,GROUND_METERS} from './satellite.js';
 import {analyzeImage,mergePhotoFeatures,mapFromPhoto,parseScale,photoSpanMeters,alignPhotoToCoverage} from './photo-stage.js';
@@ -16,7 +16,7 @@ const overhead=new T.OrthographicCamera(-40,40,40,-40,.1,600);overhead.up.set(0,
 let viewMode='3d',assist=true,weaponModel=null,recoil=0,avatars=[],lookDrag=false,mapLeft=false,mapRight=false,showHelp=false,ads=0,adsWant=false,phonePreview=false;
 const satellite=new SatelliteMap($('satellite-canvas'),$('satellite-status'));
 const characterPromise=loadCharacters().then(ok=>{if(!ok)notify('Detailed character model unavailable — using fallback figures.');return ok;});
-let W,map,pending=null,enemies=[],tracers=[],playerMesh,playerSprite,playerRing,atlasImage,textures=[],paused=true,ended=false,loading=false,requestId=0,soundOn=true,audioCtx,clock=0,last=performance.now(),noticeTimer,boundaryTimer=0,cache=new Map(),selectedTarget=null,visCache=new Map();
+let W,map,enemies=[],tracers=[],playerMesh,playerSprite,playerRing,atlasImage,textures=[],paused=true,ended=false,loading=false,requestId=0,soundOn=true,audioCtx,clock=0,last=performance.now(),noticeTimer,boundaryTimer=0,cache=new Map(),selectedTarget=null,visCache=new Map();
 const player={x:0,z:0,y:0,vy:0,angle:0,pitch:0,hp:100,weapon:0,reload:0,cooldown:0,shooting:false,steps:0,grounded:true,crouch:false,running:false,jumpQueued:false};
 const weapons=[{name:'AR-15',mag:30,capacity:30,reserve:150,damage:38,delay:.14,reload:1.7},{name:'Glock 17',mag:17,capacity:17,reserve:85,damage:29,delay:.27,reload:1.25}];
 const stick={x:0,z:0,aimX:0,aimZ:0};let mouse={x:0,y:0,active:false};let width=innerWidth,height=innerHeight,half=42,fpRect;
@@ -76,7 +76,7 @@ function togglePhone(){
 function toggleHelp(){showHelp=!showHelp;$('desktop-help').hidden=!showHelp;$('help-toggle').setAttribute('aria-pressed',String(showHelp));}
 function setPitch(value){player.pitch=clampPitch(value);$('pitch-control').value=String(Math.round(player.pitch*180/Math.PI));$('pitch-value').textContent=`${Math.round(player.pitch*180/Math.PI)}°`;}
 function startMap(next){
- visCache.clear();firstPerson.removeFromParent();for(const a of avatars)a.dispose?.();avatars=[];if(W)disposeWorld(W.scene);map=next;pending=null;map.terrain??=FLAT;W=createWorld(map);W.scene.add(firstPerson);enemies=[];tracers=[];selectedTarget=null;ended=false;Object.assign(player,{x:map.spawn.x,z:map.spawn.z,y:standHeight(map.spawn.x,map.spawn.z,map.buildings,W.height(map.spawn.x,map.spawn.z),map.yards,map.stairs,null,map.roads),vy:0,angle:0,pitch:0,hp:100,weapon:0,reload:0,cooldown:0,shooting:false,steps:0,grounded:true,crouch:false,running:false,jumpQueued:false});weapons.forEach(w=>{w.mag=w.capacity;w.reserve=w.capacity*5;});setPitch(0);
+ visCache.clear();firstPerson.removeFromParent();for(const a of avatars)a.dispose?.();avatars=[];showDebug=false;setDebugLegend(false);clearDebug();if(W)disposeWorld(W.scene);map=next;map.terrain??=FLAT;W=createWorld(map);W.scene.add(firstPerson);enemies=[];tracers=[];selectedTarget=null;ended=false;Object.assign(player,{x:map.spawn.x,z:map.spawn.z,y:standHeight(map.spawn.x,map.spawn.z,map.buildings,W.height(map.spawn.x,map.spawn.z),map.yards,map.stairs,null,map.roads),vy:0,angle:0,pitch:0,hp:100,weapon:0,reload:0,cooldown:0,shooting:false,steps:0,grounded:true,crouch:false,running:false,jumpQueued:false});weapons.forEach(w=>{w.mag=w.capacity;w.reserve=w.capacity*5;});setPitch(0);
  const own=realisticPerson(W.scene)||person(W.scene,0x727c47);avatars.push(own);playerMesh=own.group;playerMesh.position.set(player.x,player.y,player.z);playerSprite=null;if(textures[0])playerSprite=attachSprite(playerMesh,textures[0]);const ring=new T.Mesh(new T.RingGeometry(1.15,1.27,40),new T.MeshBasicMaterial({color:0xe8ef86,side:T.DoubleSide,depthTest:false,transparent:true,opacity:.8}));ring.rotation.x=-Math.PI/2;ring.layers.set(1);ring.renderOrder=6;W.scene.add(ring);playerRing=ring;
  if(SPAWN_ENEMIES){
   const roadPoints=[];for(const r of map.roads)for(let i=1;i<r.points.length;i++){const a=r.points[i-1],b=r.points[i],steps=Math.max(1,Math.ceil(Math.hypot(b.x-a.x,b.z-a.z)/12));for(let k=0;k<=steps;k++){const t=k/steps,x=a.x+(b.x-a.x)*t,z=a.z+(b.z-a.z)*t;if(Math.hypot(x,z)<map.radius-4&&!blocked(x,z,map.buildings,.6))roadPoints.push({x,z});}}
@@ -94,17 +94,70 @@ function reload(){if(paused||ended)return;const w=weapons[player.weapon];if(play
 function switchWeapon(){if(paused||ended)return;player.weapon=1-player.weapon;player.reload=0;player.cooldown=.25;setAds(false);drawWeapon();tone(450,.04,.04);updateHUD();}
 function trace(a,b,color){const line=new T.Line(new T.BufferGeometry().setFromPoints([a,b]),new T.LineBasicMaterial({color,transparent:true,opacity:.95,depthTest:true}));W.scene.add(line);tracers.push({line,life:.09});}
 function eye(){return new T.Vector3(player.x,player.y+(player.crouch?1.05:1.65),player.z);}
-function occupy(){return {fences:map.fences,trees:map.trees,y:player.y,h:player.crouch?PLAYER_CROUCH:PLAYER_STAND};}
+function occupy(){return {fences:map.fences,trees:map.trees,stairs:map.stairs,y:player.y,h:player.crouch?PLAYER_CROUCH:PLAYER_STAND};}
 function surfaceAt(x,z){return standHeight(x,z,map.buildings,W.height(x,z),map.yards,map.stairs,player.y,map.roads);}
-function canOccupy(x,z,r){
- if(blocked(x,z,map.buildings,r,occupy()))return false;
- if(inWellVoid(x,z,map.stairs,player.y))return false;
- const rise=surfaceAt(x,z)-player.y;
- if(rise>STEP_UP){
-  if(player.grounded)return false;
-  if(player.y+.12<surfaceAt(x,z))return false;
+function occupyFail(x,z,r){
+ if(blocked(x,z,map.buildings,r,occupy()))return 'wall';
+ if(inWellVoid(x,z,map.stairs,player.y))return 'void';
+ const surface=surfaceAt(x,z);
+ if(surface-player.y>STEP_UP+.02&&(player.grounded||player.y+.12<surface))return 'rise';
+ return null;
+}
+function canOccupy(x,z,r){return !occupyFail(x,z,r);}
+let debugGroup=null,showDebug=false,debugClock=0;
+function setDebugLegend(on){const el=$('debug-legend');if(el)el.hidden=!on;}
+function clearDebug(){
+ if(!debugGroup)return;
+ debugGroup.removeFromParent();
+ debugGroup.traverse(o=>{o.geometry?.dispose();if(o.material)(Array.isArray(o.material)?o.material:[o.material]).forEach(m=>m.dispose());});
+ debugGroup=null;
+}
+function drawDebug(){
+ if(!W||!map)return;
+ clearDebug();
+ debugGroup=new T.Group();
+ const mat=(color,opacity=.55)=>new T.MeshBasicMaterial({color,transparent:true,opacity,depthTest:false,side:T.DoubleSide});
+ const line=(pts,color)=>{
+  const g=new T.BufferGeometry().setFromPoints(pts);
+  const m=new T.LineLoop(g,new T.LineBasicMaterial({color,depthTest:false,transparent:true,opacity:.95}));
+  m.renderOrder=20;debugGroup.add(m);
+ };
+ const mark=(x,y,z,color,h=.28,s=.16)=>{
+  const m=new T.Mesh(new T.BoxGeometry(s,h,s),mat(color,.9));
+  m.position.set(x,y+h/2,z);m.renderOrder=22;debugGroup.add(m);
+ };
+ for(const s of map.stairs||[]){
+  const flat=s.flat||Math.abs((s.y1??0)-(s.y0??0))<.05;
+  const color=flat?0xe8ef86:0x6ec8ff;
+  const dx=s.b.x-s.a.x,dz=s.b.z-s.a.z,len=Math.hypot(dx,dz)||1;
+  const w=s.width||1.1;
+  const slab=new T.Mesh(new T.BoxGeometry(w,.05,len),mat(color,.42));
+  slab.position.set((s.a.x+s.b.x)/2,(s.y0+s.y1)/2+.04,(s.a.z+s.b.z)/2);
+  slab.rotation.y=Math.atan2(dx,dz);
+  slab.renderOrder=20;debugGroup.add(slab);
+  const well=s.well||s.holes?.[0];
+  if(well&&well.length>=3)line(well.map(p=>new T.Vector3(p.x,(s.wellY1??s.y1)+.05,p.z)),0xe070d0);
  }
- return true;
+ const rad=player.crouch?.4:.48;
+ const failColor={wall:0xff4d3a,void:0xff66aa,rise:0xff9a2e};
+ for(let dx=-2.2;dx<=2.2;dx+=.28)for(let dz=-2.2;dz<=2.2;dz+=.28){
+  const x=player.x+dx,z=player.z+dz;
+  const fail=occupyFail(x,z,rad);
+  if(!fail)continue;
+  mark(x,Math.max(player.y,surfaceAt(x,z)),z,failColor[fail]||0xff4d3a);
+ }
+ mark(player.x,player.y,player.z,0xb8ff5a,.12,.22);
+ const lookX=player.x+Math.sin(player.angle)*.5,lookZ=player.z-Math.cos(player.angle)*.5;
+ mark(lookX,player.y,lookZ,0xffffff,.1,.12);
+ W.scene.add(debugGroup);
+}
+function toggleDebug(){
+ if(!map||!W){notify('Load a sector first');return;}
+ showDebug=!showDebug;
+ setDebugLegend(showDebug);
+ if(!showDebug){clearDebug();notify('Obstacle overlay off');return;}
+ drawDebug();
+ notify('Overlay on · orange = step too high · red = wall · pink = well. G toggles.');
 }
 function direction(){if(assist&&selectedTarget)return new T.Vector3(selectedTarget.x,selectedTarget.y+1.25,selectedTarget.z).sub(eye()).normalize();const d=lookVector(player.angle,player.pitch);return new T.Vector3(d.x,d.y,d.z);}
 function shoot(){const w=weapons[player.weapon];if(player.cooldown>0||player.reload>0)return;if(w.mag<=0){reload();if(!w.reserve){player.cooldown=.5;tone(80,.035,.06);notify('Out of ammunition — switch weapon or restart.');}return;}w.mag--;player.cooldown=w.delay;gunSound();const a=eye(),d=direction();aimRay.set(a,d);aimRay.far=120;const walls=aimRay.intersectObjects([...W.walls,W.ground],false);let distance=walls.length?walls[0].distance:120,hit=null;for(const e of enemies){if(e.hp<=0)continue;const center=new T.Vector3(e.x,e.y+1.25,e.z);const intersection=aimRay.ray.intersectSphere(new T.Sphere(center,.66),new T.Vector3());if(intersection){const ed=intersection.distanceTo(a);if(ed<distance){distance=ed;hit=e;}}}const end=a.clone().addScaledVector(d,distance);trace(a.clone().addScaledVector(d,.65),end,0xffed9c);if(hit){hit.hp-=w.damage;hit.marker.material.color.set(0xfff3b0);if(hit.hp<=0){hit.group.visible=false;tone(600,.08,.03);if(SPAWN_ENEMIES&&enemies.length&&enemies.every(e=>e.hp<=0))finish(true);}}
@@ -112,21 +165,20 @@ function shoot(){const w=weapons[player.weapon];if(player.cooldown>0||player.rel
 function finish(win){ended=true;paused=true;clearInput();document.exitPointerLock?.();$('pause-title').textContent=win?'Sector clear.':'You’re down.';$('pause-copy').textContent=win?'All hostiles eliminated. Explore another location or replay this sector.':'Restart the sector to try again.';$('resume').hidden=true;if(!$('pause-dialog').open)$('pause-dialog').showModal();}
 function openPause(){if($('map-dialog').open||$('pause-dialog').open)return;paused=true;clearInput();document.exitPointerLock?.();$('pause-title').textContent='Paused.';$('pause-copy').textContent='Take a breath. The sector can wait.';$('resume').hidden=false;$('pause-dialog').showModal();}
 function resume(){if(ended||!map||!W)return;$('pause-dialog').close();$('map-dialog').close();paused=false;clearInput();if(SPAWN_ENEMIES&&enemies.length===0)notify('No enemy positions fit this map. Explore it, or choose another.');}
-function openMaps(){paused=true;clearInput();document.exitPointerLock?.();$('pause-dialog').close();if(!$('map-dialog').open)$('map-dialog').showModal();$('deploy').hidden=!(pending||map);}
-async function enterSector(){
- if(pending){
-  setLoading(true);status('Generating the playground…');
-  await Promise.all([atlasPromise,characterPromise]);
-  await new Promise(r=>requestAnimationFrame(r));
-  startMap(pending);
-  setLoading(false);
-  $('map-summary').textContent+=SPAWN_ENEMIES?` ${enemies.length} generated enemies.`:' Combat off while the playground is tuned.';
-  status('Ready. Playground built from your chosen location.');
- }
- if(!map||!W)return;
+function openMaps(){paused=true;clearInput();document.exitPointerLock?.();$('pause-dialog').close();if(!$('map-dialog').open)$('map-dialog').showModal();}
+async function beginPlay(next,debug,id){
+ if(id!==requestId)return false;
+ setLoadDebug(debug,true);
+ status('Generating the playground…');
+ await Promise.all([atlasPromise,characterPromise]);
+ if(id!==requestId)return false;
+ await new Promise(r=>requestAnimationFrame(r));
+ startMap(next);
+ $('map-summary').textContent+=SPAWN_ENEMIES?` ${enemies.length} generated enemies.`:' Combat off while the playground is tuned.';
  resume();
+ return true;
 }
-function setLoading(value){loading=value;for(const id of ['load-map','deploy','photo-stage'])$(id).disabled=value;}
+function setLoading(value){loading=value;for(const id of ['load-map','photo-stage'])$(id).disabled=value;}
 function setLoadDebug(text,show){
  if(text!=null)$('map-summary').textContent=text;
  $('load-debug').hidden=!show;
@@ -178,9 +230,8 @@ async function loadPhotoStage(file){
    next.terrain={...FLAT,label:'Flat terrain under aerial photo'};
   }
   if(id!==requestId)return false;
-  startMap(next);
-  setLoadDebug(`Photo 1:${scaleN} at ${lat.toFixed(5)}, ${lon.toFixed(5)} · ~${photoMeters.toFixed(0)} m across · ${next.buildings.length} buildings · ${next.fences?.length||0} fences · ${next.trees?.length||0} trees. ${next.satellite?.label||''}. North-up photo is layered on the map data.`,true);$('deploy').hidden=false;
-  status(next.real?'Ready. Photo aligned to the mapped coordinates. Enter sector to play.':'Ready. Photo sized from the scale; map outlines were unavailable.');return true;
+  const debug=`Photo 1:${scaleN} at ${lat.toFixed(5)}, ${lon.toFixed(5)} · ~${photoMeters.toFixed(0)} m across · ${next.buildings.length} buildings · ${next.fences?.length||0} fences · ${next.trees?.length||0} trees. ${next.satellite?.label||''}. North-up photo is layered on the map data.`;
+  return await beginPlay(next,debug,id);
  }catch(e){status(e.message||'The aerial photo could not be read.',true);return false;}
  finally{if(id===requestId)setLoading(false);}
 }
@@ -190,9 +241,9 @@ async function loadMap(lat,lon,name){if(loading)return false;const id=++requestI
  const next=convert(data,lat,lon,name||'Selected coordinates');status('Building map. Reading elevation and newest Sentinel-2 mosaic…');
  const [terrain,coverage]=await Promise.all([loadTerrain(lat,lon).catch(()=>FLAT),loadSatelliteCoverage(lat,lon).catch(()=>null)]);
  next.terrain=terrain;next.satellite=coverage;
- if(id!==requestId)return false;pending=next;cache.set(`${lat},${lon}`,next);const verified=next.buildings.filter(b=>b.verified).length;const parks=(next.cover||[]).filter(c=>c.kind!=='water').length,water=(next.cover||[]).filter(c=>c.kind==='water').length;
- setLoadDebug(`${next.buildings.length} mapped buildings · ${verified} with mapped height/levels · ${next.buildings.length-verified} estimated. ${next.cover?.length||0} landcover patches (${parks} park/forest, ${water} water). ${next.fences?.length||0} fences · ${next.trees?.length||0} trees. ${next.terrain.label}. ${coverage?.label||'No satellite'}. Enter sector to generate the playground.`,true);$('deploy').hidden=false;
- status(next.terrain.real?(coverage?.draped?'Location ready. Enter sector to build streets, buildings and terrain.':'Location ready. Elevation loaded; satellite drape unavailable. Enter sector to build.'):'Location ready, but elevation could not load. Terrain will be flat. Enter sector to build.',!next.terrain.real);return true;
+ if(id!==requestId)return false;cache.set(`${lat},${lon}`,next);const verified=next.buildings.filter(b=>b.verified).length;const parks=(next.cover||[]).filter(c=>c.kind!=='water').length,water=(next.cover||[]).filter(c=>c.kind==='water').length;
+ const debug=`${next.buildings.length} mapped buildings · ${verified} with mapped height/levels · ${next.buildings.length-verified} estimated. ${next.cover?.length||0} landcover patches (${parks} park/forest, ${water} water). ${next.fences?.length||0} fences · ${next.trees?.length||0} trees. ${next.terrain.label}. ${coverage?.label||'No satellite'}.`;
+ return await beginPlay(next,debug,id);
  }catch(e){status(e.name==='AbortError'?'Map request timed out. Try again.':e.message,true);return false;}finally{clearTimeout(timer);if(id===requestId)setLoading(false);}}
 function insetBox(){if(!mapRight||$('fp-frame').hidden)return null;const area=$('fp-area').getBoundingClientRect(),canvas=renderer.domElement.getBoundingClientRect(),w=area.width,h=area.height;if(w<8||h<8||canvas.width<8)return null;return{left:area.left-canvas.left,bottom:canvas.bottom-area.bottom,width:w,height:h};}
 function resize(){width=$('game').clientWidth;height=$('game').clientHeight;renderer.setSize(width,height);half=width<700?39:44;fpRect=insetBox();const mainAspect=width/Math.max(1,height),insetOn=!!fpRect,insetAspect=insetOn?fpRect.width/Math.max(1,fpRect.height):mainAspect;if(viewMode==='2d'){overhead.left=-half*mainAspect;overhead.right=half*mainAspect;firstPerson.aspect=insetAspect;}else{firstPerson.aspect=mainAspect;overhead.left=-half*insetAspect;overhead.right=half*insetAspect;}overhead.top=half;overhead.bottom=-half;overhead.updateProjectionMatrix();firstPerson.updateProjectionMatrix();}
@@ -220,7 +271,7 @@ function update(dt){clock+=dt;player.cooldown=Math.max(0,player.cooldown-dt);if(
   player.vy-=17*dt;player.y+=player.vy*dt;
   if(player.y<=gy&&player.vy<=0){player.y=gy;player.vy=0;player.grounded=true;}
  }
- if(cap!=null&&player.y+head>cap){player.y=Math.max(gy,cap-head);if(player.vy>0)player.vy=0;}
+ if(cap!=null&&player.y+head>cap-.03){player.y=Math.max(gy,cap-head-.03);if(player.vy>0)player.vy=0;}
  if(len>.01)player.steps+=dt*(player.running?14:player.crouch?6:10);playerMesh.position.set(player.x,player.y,player.z);playerMesh.rotation.y=-player.angle;
  for(let i=0;i<avatars.length;i++)avatars[i].update?.(dt,i===0?Math.min(1,len):0,i===0?{crouch:player.crouch,run:player.running}:undefined);selectedTarget=nearestTarget();if(player.shooting)shoot();
  const pEye=eye();for(const e of enemies){if(e.hp<=0)continue;const head=new T.Vector3(e.x,e.y+1.25,e.z),dist=head.distanceTo(pEye);e.group.visible=true;e.cooldown-=dt;if(e.cooldown<.65&&e.cooldown>0){e.marker.material.color.set(0xffd693);e.marker.scale.setScalar(1+Math.sin(clock*16)*.12);}else{e.marker.material.color.set(selectedTarget===e?0xe8ef86:0xef946e);e.marker.scale.setScalar(1);}if(dist<64&&visible(head,pEye)){e.group.rotation.y=Math.atan2(-(player.x-e.x),-(player.z-e.z));if(e.cooldown<=0){trace(head,pEye.clone().add(new T.Vector3((Math.random()-.5)*1.2,0,(Math.random()-.5)*1.2)),0xff8a67);tone(100,.07,.025);if(Math.random()<.64){player.hp-=7;$('damage').style.opacity='.45';setTimeout(()=>$('damage').style.opacity='0',140);updateHUD();if(player.hp<=0){finish(false);break;}}e.cooldown=2.4+Math.random()*1.4;}}}
@@ -229,7 +280,7 @@ function update(dt){clock+=dt;player.cooldown=Math.max(0,player.cooldown-dt);if(
 function render(){const now=performance.now(),dt=Math.min(.04,(now-last)/1000);last=now;
  if(!W){renderer.setClearColor(0x11191c);renderer.setScissorTest(false);renderer.setViewport(0,0,width,height);renderer.clear();requestAnimationFrame(render);return;}
  const adsTarget=adsWant&&canAds()?1:0;ads+=(adsTarget-ads)*Math.min(1,dt*16);if(Math.abs(ads-adsTarget)<.01)ads=adsTarget;applyAdsVisual();
- if(!paused&&!ended)update(dt);recoil=Math.max(0,recoil-dt*10);for(let i=tracers.length-1;i>=0;i--){const t=tracers[i];if(!paused)t.life-=dt;if(t.life<=0){W.scene.remove(t.line);t.line.geometry.dispose();t.line.material.dispose();tracers.splice(i,1);}}
+ if(!paused&&!ended)update(dt);if(showDebug){debugClock+=dt;if(debugClock>.18){debugClock=0;drawDebug();}}recoil=Math.max(0,recoil-dt*10);for(let i=tracers.length-1;i>=0;i--){const t=tracers[i];if(!paused)t.life-=dt;if(t.life<=0){W.scene.remove(t.line);t.line.geometry.dispose();t.line.material.dispose();tracers.splice(i,1);}}
  overhead.position.set(player.x,player.y+200,player.z);overhead.lookAt(player.x,player.y,player.z);if(playerRing)playerRing.position.set(player.x,player.y+.18,player.z);const heading=(player.angle*180/Math.PI%360+360)%360;$('heading').textContent=`${String(Math.round(heading)%360).padStart(3,'0')}° · ${Math.round(player.pitch*180/Math.PI)}°`;$('aim-label').textContent=assist?(selectedTarget?'Street · assisted':'Assist on · drag to look'):'Manual aim · drag to look';const a=eye(),d=direction();firstPerson.position.copy(a);firstPerson.lookAt(a.clone().add(d));aimRay.set(a,d);aimRay.far=120;const hits=aimRay.intersectObjects(W.walls,false);const targetDistance=selectedTarget?new T.Vector3(selectedTarget.x,selectedTarget.y+1.25,selectedTarget.z).distanceTo(a):(hits[0]?.distance||120);alignWeapon(weaponModel,targetDistance,recoil,player.weapon===1);
  if(W.sun)W.sun.shadow.needsUpdate=!paused;
  renderer.setScissorTest(false);renderer.setViewport(0,0,width,height);renderer.clear();if(playerMesh)playerMesh.visible=viewMode==='2d';renderer.render(W.scene,viewMode==='2d'?overhead:firstPerson);
@@ -264,11 +315,24 @@ function inspectView(){
  const stairs=(map.stairs||[]).map(s=>{
   const dist=Math.hypot((s.a.x+s.b.x)/2-player.x,(s.a.z+s.b.z)/2-player.z);
   return {s,dist};
- }).filter(x=>x.dist<20).sort((a,b)=>a.dist-b.dist).slice(0,8).map(({s,dist})=>({y0:r(s.y0),y1:r(s.y1),width:r(s.width),rise:r(s.y1-s.y0),dist:r(dist)}));
+ }).filter(x=>x.dist<20).sort((a,b)=>a.dist-b.dist).slice(0,8).map(({s,dist})=>({
+  y0:r(s.y0),y1:r(s.y1),width:r(s.width),rise:r(s.y1-s.y0),flat:!!(s.flat||Math.abs((s.y1??0)-(s.y0??0))<.05),
+  a:{x:r(s.a.x),z:r(s.a.z)},b:{x:r(s.b.x),z:r(s.b.z)},dist:r(dist)
+ }));
+ const rad=player.crouch?.4:.48;
+ const lookX=player.x+d.x*.45,lookZ=player.z+d.z*.45;
+ const surfaceHere=surfaceAt(player.x,player.z),surfaceAhead=surfaceAt(lookX,lookZ);
+ const blockers=[];
+ for(let dx=-1.4;dx<=1.4;dx+=.35)for(let dz=-1.4;dz<=1.4;dz+=.35){
+  const fail=occupyFail(player.x+dx,player.z+dz,rad);
+  if(!fail)continue;
+  blockers.push({dx:r(dx),dz:r(dz),fail,rise:r(surfaceAt(player.x+dx,player.z+dz)-player.y)});
+ }
  return {
   map:map.name,view:viewMode,
   player:{x:r(player.x),y:r(player.y),z:r(player.z),eyeY:r(a.y),angle:r(player.angle*180/Math.PI),pitch:r(player.pitch*180/Math.PI),ground:r(groundHere),feetMinusGround:r(player.y-groundHere)},
   look:{dir:{x:r(d.x),y:r(d.y),z:r(d.z)},hit:hit?{x:r(hit.point.x),y:r(hit.point.y),z:r(hit.point.z),dist:r(hit.distance),hitMinusFloor:insideB?r(hit.point.y-insideB.base):null,hitMinusFeet:r(hit.point.y-player.y),hitMinusEye:r(hit.point.y-a.y)}:null},
+  walk:{occupyHere:canOccupy(player.x,player.z,rad),failHere:occupyFail(player.x,player.z,rad),voidHere:inWellVoid(player.x,player.z,map.stairs,player.y),surface:r(surfaceHere),riseAhead:r(surfaceAhead-player.y),occupyAhead:canOccupy(lookX,lookZ,rad),failAhead:occupyFail(lookX,lookZ,rad),voidAhead:inWellVoid(lookX,lookZ,map.stairs,player.y),blockers},
   insideBuilding:insideB?insideB.id:null,
   buildings:nearby,
   stairs
@@ -277,10 +341,10 @@ function inspectView(){
 async function copyViewDump(){
  if(!map||!W){notify('No sector to dump');return;}
  const json=JSON.stringify(inspectView(),null,2);
- try{await navigator.clipboard.writeText(json);notify('View dump copied — paste it in chat');}
+ try{await navigator.clipboard.writeText(json);notify('View dump copied — G toggles obstacle overlay');}
  catch{window.prompt('Copy view dump',json);}
 }
-window.addEventListener('keydown',e=>{if(e.target.tagName==='INPUT')return;if(['KeyW','KeyA','KeyS','KeyD','ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space'].includes(e.code))e.preventDefault();if(e.code==='Escape'){e.preventDefault();if($('pause-dialog').open&&!ended)resume();else if(!$('map-dialog').open){if(map)openPause();else openMaps();}return;}if(!e.repeat&&e.code==='KeyF'&&map&&W){e.preventDefault();copyViewDump();return;}if(paused)return;keys.add(e.code);if(!e.repeat&&e.code==='KeyR')reload();if(!e.repeat&&e.code==='KeyQ')switchWeapon();if(!e.repeat&&e.code==='Space')player.jumpQueued=true;});window.addEventListener('keyup',e=>{keys.delete(e.code);});window.addEventListener('blur',()=>{clearInput();if(map&&!paused)openPause();});document.addEventListener('visibilitychange',()=>{if(document.hidden){clearInput();if(map&&!paused)openPause();}});
+window.addEventListener('keydown',e=>{if(e.target.tagName==='INPUT')return;if(['KeyW','KeyA','KeyS','KeyD','ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space'].includes(e.code))e.preventDefault();if(e.code==='Escape'){e.preventDefault();if($('pause-dialog').open&&!ended)resume();else if(!$('map-dialog').open){if(map)openPause();else openMaps();}return;}if(!e.repeat&&e.code==='KeyF'&&map&&W){e.preventDefault();copyViewDump();if(!showDebug)toggleDebug();return;}if(!e.repeat&&e.code==='KeyG'&&map&&W){e.preventDefault();toggleDebug();return;}if(paused)return;keys.add(e.code);if(!e.repeat&&e.code==='KeyR')reload();if(!e.repeat&&e.code==='KeyQ')switchWeapon();if(!e.repeat&&e.code==='Space')player.jumpQueued=true;});window.addEventListener('keyup',e=>{keys.delete(e.code);});window.addEventListener('blur',()=>{clearInput();if(map&&!paused)openPause();});document.addEventListener('visibilitychange',()=>{if(document.hidden){clearInput();if(map&&!paused)openPause();}});
 $('map-form').addEventListener('submit',e=>{e.preventDefault();});
 function loadCoordinates(){try{const [lat,lon]=coordinates($('location-input').value);loadMap(lat,lon);}catch(err){status(err.message,true);}}
 $('load-map').onclick=loadCoordinates;
@@ -290,8 +354,8 @@ $('summary-toggle').onclick=()=>{const open=$('map-summary').hidden;$('map-summa
 $('photo-toggle').onclick=()=>{const open=$('photo-body').hidden;$('photo-body').hidden=!open;$('photo-toggle').setAttribute('aria-expanded',open?'true':'false');$('photo-route').classList.toggle('is-open',open);$('photo-toggle').querySelector('.collapse-mark').textContent=open?'–':'+';if(open)$('photo-scale').focus();};
 $('photo-stage').onclick=()=>{try{parseScale($('photo-scale').value);coordinates($('photo-coords').value);$('photo-input').click();}catch(err){status(err.message,true);}};
 for(const id of ['photo-scale','photo-coords'])$(id).addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();$('photo-stage').click();}});
-$('photo-input').addEventListener('change',e=>{const file=e.target.files?.[0];e.target.value='';if(file)loadPhotoStage(file);});$('maps').onclick=openMaps;$('pause-map').onclick=openMaps;$('close-map').onclick=()=>{if(!loading&&map)resume();};$('deploy').onclick=enterSector;$('pause').onclick=()=>{if(map)openPause();else openMaps();};$('resume').onclick=resume;$('restart').onclick=()=>{if(!map)return;startMap(map);$('pause-dialog').close();paused=false;};$('sound').onclick=()=>{soundOn=!soundOn;$('sound').textContent=soundOn?'Sound on':'Sound off';if(soundOn)unlockAudio();tone(400,.08,.05);};for(const id of ['map-dialog','pause-dialog'])$(id).addEventListener('cancel',e=>{e.preventDefault();if(!loading&&!ended&&map)resume();});
+$('photo-input').addEventListener('change',e=>{const file=e.target.files?.[0];e.target.value='';if(file)loadPhotoStage(file);});$('maps').onclick=openMaps;$('pause-map').onclick=openMaps;$('close-map').onclick=()=>{if(!loading&&map)resume();};$('pause').onclick=()=>{if(map)openPause();else openMaps();};$('resume').onclick=resume;$('restart').onclick=()=>{if(!map)return;startMap(map);$('pause-dialog').close();paused=false;};$('sound').onclick=()=>{soundOn=!soundOn;$('sound').textContent=soundOn?'Sound on':'Sound off';if(soundOn)unlockAudio();tone(400,.08,.05);};for(const id of ['map-dialog','pause-dialog'])$(id).addEventListener('cancel',e=>{e.preventDefault();if(!loading&&!ended&&map)resume();});
 // Optional browser agent tools use exactly the same visible actions and state.
-if(document.modelContext?.registerTool){const life=new AbortController();for(const tool of [{name:'read_game_state',description:'Read current map provenance, terrain availability, health and remaining enemies.',inputSchema:{type:'object',properties:{},additionalProperties:false},annotations:{readOnlyHint:true},execute:()=>({map:map?.name,coordinates:map?.real?[map.lat,map.lon]:null,realGeometry:map?.real,realElevation:map?.terrain?.real,paused,health:player.hp,remaining:enemies.filter(e=>e.hp>0).length})},{name:'load_game_location',description:'Pause the game and load a real map by coordinates. Keeps map selection open for the player to enter.',inputSchema:{type:'object',properties:{latitude:{type:'number',minimum:-80,maximum:80},longitude:{type:'number',minimum:-180,maximum:180}},required:['latitude','longitude'],additionalProperties:false},annotations:{readOnlyHint:false},execute:async input=>{const [lat,lon]=coordinates(`${input.latitude},${input.longitude}`);if(loading)throw Error('A map is already loading.');openMaps();$('location-input').value=`${lat}, ${lon}`;$('photo-coords').value=`${lat}, ${lon}`;const ok=await loadMap(lat,lon);if(!ok)throw Error($('map-status').textContent);return {ready:true,name:pending?.name,buildings:pending?.buildings.length,realElevation:pending?.terrain?.real,note:'Enter sector to generate the playground'};}}]){try{Promise.resolve(document.modelContext.registerTool(tool,{signal:life.signal})).catch(()=>{});}catch{}}window.addEventListener('pagehide',()=>life.abort(),{once:true});}
+if(document.modelContext?.registerTool){const life=new AbortController();for(const tool of [{name:'read_game_state',description:'Read current map provenance, terrain availability, health and remaining enemies.',inputSchema:{type:'object',properties:{},additionalProperties:false},annotations:{readOnlyHint:true},execute:()=>({map:map?.name,coordinates:map?.real?[map.lat,map.lon]:null,realGeometry:map?.real,realElevation:map?.terrain?.real,paused,health:player.hp,remaining:enemies.filter(e=>e.hp>0).length})},{name:'load_game_location',description:'Load a real map by coordinates and start playing.',inputSchema:{type:'object',properties:{latitude:{type:'number',minimum:-80,maximum:80},longitude:{type:'number',minimum:-180,maximum:180}},required:['latitude','longitude'],additionalProperties:false},annotations:{readOnlyHint:false},execute:async input=>{const [lat,lon]=coordinates(`${input.latitude},${input.longitude}`);if(loading)throw Error('A map is already loading.');openMaps();$('location-input').value=`${lat}, ${lon}`;$('photo-coords').value=`${lat}, ${lon}`;const ok=await loadMap(lat,lon);if(!ok)throw Error($('map-status').textContent);return {ready:true,name:map?.name,buildings:map?.buildings.length,realElevation:map?.terrain?.real};}}]){try{Promise.resolve(document.modelContext.registerTool(tool,{signal:life.signal})).catch(()=>{});}catch{}}window.addEventListener('pagehide',()=>life.abort(),{once:true});}
 $('view-mode').onclick=$('swap-inset').onclick=()=>setView(viewMode==='2d'?'3d':'2d');$('help-toggle').onclick=toggleHelp;$('assist-toggle').onclick=toggleAssist;$('pitch-control').addEventListener('input',e=>setPitch(Number(e.target.value)*Math.PI/180));$('level-aim').onclick=()=>setPitch(0);$('fire-button').addEventListener('pointerdown',e=>{if(paused)return;e.preventDefault();player.shooting=true;$('fire-button').setPointerCapture(e.pointerId);});for(const type of ['pointerup','pointercancel','lostpointercapture'])$('fire-button').addEventListener(type,()=>player.shooting=false);$('zoom-button').addEventListener('pointerdown',e=>{e.preventDefault();e.stopPropagation();if(paused)return;if(!canAds()){notify('Scope is AR-15 only');return;}setAds(!adsWant);});$('switch-button').addEventListener('pointerdown',e=>{e.preventDefault();e.stopPropagation();switchWeapon();});$('jump-button').addEventListener('pointerdown',e=>{e.preventDefault();e.stopPropagation();if(paused)return;player.jumpQueued=true;});$('phone-map').addEventListener('pointerdown',e=>{e.preventDefault();e.stopPropagation();if(paused)return;setMapRight(true);});$('close-inset').addEventListener('pointerdown',e=>{e.preventDefault();e.stopPropagation();setMapRight(false);});window.addEventListener('keydown',e=>{if(e.repeat||e.target.tagName==='INPUT')return;if(e.code==='KeyV')setView(viewMode==='2d'?'3d':'2d');if(e.code==='KeyJ'||e.code==='KeyH')toggleAssist();if(e.code==='KeyN'){e.preventDefault();setMapLeft();}if(e.code==='KeyM'){e.preventDefault();setMapRight();}if(e.code==='KeyP'){e.preventDefault();togglePhone();}if(e.key==='?'||e.code==='Slash'){e.preventDefault();toggleHelp();}});document.addEventListener('pointerlockchange',()=>{if(!document.pointerLockElement&&viewMode==='3d'&&!paused&&map)openPause();});
-resize();applyPhoneLayout();matchMedia('(pointer:coarse) and (max-height:500px), (pointer:coarse) and (max-width:480px)').addEventListener('change',applyPhoneLayout);requestAnimationFrame(render);$('location-input').value=`${INITIAL[0]}, ${INITIAL[1]}`;$('photo-coords').value=`${INITIAL[0]}, ${INITIAL[1]}`;openMaps();status('Choose a location. The playground is generated only after you enter the sector.');
+resize();applyPhoneLayout();matchMedia('(pointer:coarse) and (max-height:500px), (pointer:coarse) and (max-width:480px)').addEventListener('change',applyPhoneLayout);requestAnimationFrame(render);$('location-input').value=`${INITIAL[0]}, ${INITIAL[1]}`;$('photo-coords').value=`${INITIAL[0]}, ${INITIAL[1]}`;openMaps();status('Choose where to play.');

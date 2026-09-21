@@ -1,5 +1,5 @@
 import * as T from './three.module.js';
-import {inside,segmentDistance,closedRing,polygonArea,standHeight,STEP_UP,pullRingOffRoads,FLOOR_SLAB} from './map-model.js?v=well-v8';
+import {inside,segmentDistance,closedRing,polygonArea,standHeight,STEP_UP,pullRingOffRoads,FLOOR_SLAB} from './map-model.js?v=well-v16';
 import {mergeGeometries} from './BufferGeometryUtils.js';
 const V=(x,y,z)=>new T.Vector3(x,y,z);
 const mat=(color,extra={})=>new T.MeshStandardMaterial({color,roughness:.95,...extra});
@@ -12,6 +12,23 @@ function commit(geoms,material,scene,walls,flags={}){
  for(const x of geoms)x.dispose();
 }
 function box(parent,w,h,d,color,x,y,z){return mesh(new T.BoxGeometry(w,h,d),mat(color),parent,x,y,z);}
+const INNER_WALL=[.97,.97,.95];
+function hexRgb(hex){return [(hex>>16&255)/255,(hex>>8&255)/255,(hex&255)/255];}
+function tintGeom(g,rgb){
+ const n=g.attributes.position.count,col=new Float32Array(n*3);
+ for(let i=0;i<n;i++){col[i*3]=rgb[0];col[i*3+1]=rgb[1];col[i*3+2]=rgb[2];}
+ g.setAttribute('color',new T.Float32BufferAttribute(col,3));
+}
+function paintInnerWall(g,ix,iz,outer){
+ g.computeVertexNormals();
+ const n=g.attributes.normal,col=new Float32Array(n.count*3);
+ for(let i=0;i<n.count;i++){
+  const inner=n.getX(i)*ix+n.getZ(i)*iz>.45;
+  const c=inner?INNER_WALL:outer;
+  col[i*3]=c[0];col[i*3+1]=c[1];col[i*3+2]=c[2];
+ }
+ g.setAttribute('color',new T.Float32BufferAttribute(col,3));
+}
 function createDetailTexture(){
  const n=256,data=new Uint8Array(n*n*4);let seed=0x9e3779b9;
  const rnd=()=>{seed=Math.imul(seed,1664525)+1013904223>>>0;return seed/0xffffffff;};
@@ -246,7 +263,7 @@ function insetPoints(p,dist){
  if(!inside(ring.reduce((s,q)=>s+q.x,0)/ring.length,ring.reduce((s,q)=>s+q.z,0)/ring.length,p))return null;
  return ring;
 }
-const STAIR_GOING=.62,STAIR_RISER_MIN=.10,STAIR_TREAD_MIN=.26,STAIR_RAIL_FLIGHT=.90,STAIR_RAIL_LANDING=1.05,STAIR_LANDING_RUN=1.20,CLEAR_MIN=2.50,STAIR_HEADROOM=2.20,STAIR_FLIGHT_MAX=16,STAIR_FLIGHT_MIN=3;
+const STAIR_GOING=.62,STAIR_RISER_MIN=.10,STAIR_TREAD_MIN=.26,STAIR_RAIL_FLIGHT=.90,STAIR_RAIL_LANDING=1.05,STAIR_LANDING_RUN=1.20,WELL_PAST=.5,CLEAR_MIN=2.50,STAIR_HEADROOM=2.20,STAIR_FLIGHT_MAX=16,STAIR_FLIGHT_MIN=3;
 function stairKind(b,outdoor){
  const t=String(b?.tags?.building||''),levels=b?.levels||1;
  const pub=['public','civic','government','school','university','college','hospital','church','synagogue','mosque','train_station','retail','commercial','office','kindergarten'];
@@ -443,12 +460,13 @@ function holePath(pts,outer){
  const cx=pts.reduce((s,p)=>s+p.x,0)/pts.length,cz=pts.reduce((s,p)=>s+p.z,0)/pts.length;
  const inset=pts.map(p=>{
   const dx=cx-p.x,dz=cz-p.z,L=Math.hypot(dx,dz)||1;
-  let x=p.x+dx/L*.02,z=p.z+dz/L*.02;
+  let x=p.x+dx/L*.01,z=p.z+dz/L*.01;
   if(outer)for(let k=0;k<6&&!inside(x,z,outer);k++){x+=dx/L*.06;z+=dz/L*.06;}
   return {x,z};
  });
- if(outer&&inset.some(q=>!inside(q.x,q.z,outer)))return null;
- const sp=xzToShape(inset);
+ const ring=(outer&&inset.every(q=>inside(q.x,q.z,outer)))?inset:pts;
+ if(outer&&ring.some(q=>!inside(q.x,q.z,outer)))return null;
+ const sp=xzToShape(ring);
  const outerA=outer?shapeArea(xzToShape(outer)):1;
  if(shapeArea(sp)*outerA>0)sp.reverse();
  return makePath(sp);
@@ -488,7 +506,7 @@ function floorSlab(points,y,holes){
 function planStraight(o,ux,uz,px,pz,spec,ns,exitRun=STAIR_LANDING_RUN){
  const n=ns[0],w=spec.width,run=n*spec.B,exit=Math.max(.9,exitRun),hw=w/2;
  const foot=localCorners(o,ux,uz,px,pz,0,run+exit,-hw,hw);
- const hole=localCorners(o,ux,uz,px,pz,.02,run+.14,-hw+.02,hw-.02);
+ const hole=localCorners(o,ux,uz,px,pz,.02,run+WELL_PAST,-hw+.02,hw-.02);
  const from={x:o.x,z:o.z},to={x:o.x+ux*run,z:o.z+uz*run};
  const land={cx:o.x+ux*(run+exit/2),cz:o.z+uz*(run+exit/2),depth:exit,width:w,ux,uz,px,pz,open:{u0:true}};
  return {fold:'straight',pts:foot,well:hole,flights:[{from,to,n,cap:true}],landings:[],exits:[land],holes:[hole]};
@@ -497,7 +515,7 @@ function planU(o,ux,uz,px,pz,spec,ns,exitRun=STAIR_LANDING_RUN){
  const w=spec.width,B=spec.B,gap=.16,n1=ns[0],n2=ns[1]||ns[0];
  const run1=n1*B,run2=n2*B,exit=Math.max(.9,exitRun),landU=Math.max(run1,run2+exit),landD=Math.max(w,.9),span=2*w+gap;
  const foot=localCorners(o,ux,uz,px,pz,0,landU+landD,0,span);
- const hole=localCorners(o,ux,uz,px,pz,exit-.14,landU+landD-.02,.02,span-.02);
+ const hole=localCorners(o,ux,uz,px,pz,exit-WELL_PAST,landU+landD-.02,.02,span-.02);
  const v1=w/2,v2=w+gap+w/2;
  const f1from={x:o.x+ux*(landU-run1)+px*v1,z:o.z+uz*(landU-run1)+pz*v1};
  const f1to={x:o.x+ux*landU+px*v1,z:o.z+uz*landU+pz*v1};
@@ -511,7 +529,7 @@ function planL(o,ux,uz,px,pz,spec,ns,exitRun=STAIR_LANDING_RUN){
  const w=spec.width,B=spec.B,n1=ns[0],n2=ns[1]||ns[0],run1=n1*B,run2=n2*B,land=Math.max(w,STAIR_LANDING_RUN);
  const exit=Math.max(.9,exitRun);
  const foot=localCorners(o,ux,uz,px,pz,0,run1+land,0,w+run2+exit);
- const u0=.02,u1=run1+land-.02,v0=.02,v1=w-.02,v2=w+run2+.14,uInner=run1+.02;
+ const u0=.02,u1=run1+land-.02,v0=.02,v1=w-.02,v2=w+run2+WELL_PAST,uInner=run1+.02;
  const hole=[
   {x:o.x+ux*u0+px*v0,z:o.z+uz*u0+pz*v0},
   {x:o.x+ux*u1+px*v0,z:o.z+uz*u1+pz*v0},
@@ -747,7 +765,7 @@ function corridorClearance(mid,nx,nz,width,depth,buildings,skipId,fences){
  return min;
 }
 function approachDepth(rise,doorW){
- if(!(rise>.45))return APPROACH_WALK;
+ if(!(rise>STEP_UP))return APPROACH_WALK;
  const spec=layoutStair(rise,'public_outdoor',doorW);
  return spec.n*spec.B+APPROACH_WALK;
 }
@@ -807,9 +825,10 @@ export function createWorld(map){
  for(const {p,width}of joints.values()){junction(p,(width+1.9)/2,.051,curbMat);junction(p,width/2,.086,width<=3?pathMat:roadMat);}
  for(const material of [roadMat,curbMat,pathMat,markMat]){const parts=roadMeshes.filter(m=>m.material===material);if(!parts.length)continue;const combined=mergeGeometries(parts.map(m=>m.geometry));const merged=mesh(combined,material,scene);merged.castShadow=false;for(const m of parts){scene.remove(m);m.geometry.dispose();}}
  const walls=[],slots=[];
- const wallMats=[mat(0xb8b5a0),mat(0xc4c0aa),mat(0xaaa997),mat(0xced0be)],roofMat=mat(0x969e91,{side:T.DoubleSide}),earthMat=mat(0x7a7564),floorMat=mat(0x7a7668,{side:T.DoubleSide});
+ const wallHex=[0xb8b5a0,0xc4c0aa,0xaaa997,0xced0be],wallTints=wallHex.map(hexRgb);
+ const wallMats=wallTints.map(()=>mat(0xffffff,{vertexColors:true})),roofMat=mat(0x969e91,{side:T.DoubleSide}),earthMat=mat(0x7a7564),floorMat=mat(0x7a7668,{side:T.DoubleSide});
  const frameMat=mat(0x3c3830),leafMat=mat(0x2a2620),stoneMat=mat(0x8a8580),railMat=mat(0x32322e),clutterMat=mat(0x606d70);
- const thick=.2,doorW=1.72,winW=1.05,winH=1.35;
+ const thick=.2,SLAB_INSET=.1,doorW=1.72,winW=1.05,winH=1.35;
  const wallBuckets=wallMats.map(()=>[]),earthAll=[],fills=[],floors=[],roofs=[],clutter=[],stone=[],rail=[],frames=[],leaves=[];
  map.yards=[];map.stairs=[];
  const yardKeys=new Set();
@@ -895,6 +914,7 @@ export function createWorld(map){
     }
    }
   }
+  const slab=insetPoints(p,SLAB_INSET)||p;
   const wellAt=y=>{
    const seen=new Set(),holes=[];
    for(const s of wells){
@@ -903,7 +923,7 @@ export function createWorld(map){
     for(const poly of polys){
      const key=(poly||[]).map(q=>`${q.x.toFixed(2)},${q.z.toFixed(2)}`).join('|');
      if(!key||seen.has(key))continue;seen.add(key);
-     const h=holePath(poly,p);
+     const h=holePath(poly,slab);
      if(h)holes.push(h);
     }
    }
@@ -912,9 +932,9 @@ export function createWorld(map){
   const lowest=levelsY[0];
   for(const y of levelsY){
    if(y<=lowest+.05)continue;
-   floors.push(floorSlab(p,y,wellAt(y)));
+   floors.push(floorSlab(slab,y,wellAt(y)));
   }
-  const roofG=new T.ExtrudeGeometry(new T.Shape(p.map(q=>new T.Vector2(q.x,-q.z))),{depth:FLOOR_SLAB,bevelEnabled:false});roofG.rotateX(-Math.PI/2);roofG.translate(0,b.base+b.height,0);roofs.push(roofG);
+  const roofG=new T.ExtrudeGeometry(new T.Shape(slab.map(q=>new T.Vector2(q.x,-q.z))),{depth:FLOOR_SLAB,bevelEnabled:false});roofG.rotateX(-Math.PI/2);roofG.translate(0,b.base+b.height,0);roofs.push(roofG);
   if(inside(cx,cz,p)&&b.area>80){
    const ac=new T.BoxGeometry(2.3,.45,1.2);ac.translate(cx,b.base+b.height+.22,cz);clutter.push(ac);
   }
@@ -949,7 +969,7 @@ export function createWorld(map){
     const mid={x:(da.x+db.x)/2,z:(da.z+db.z)/2};
     cutFenceGate(map.fences,mid,e.nx,e.nz,doorW,Math.max(2.6,approachDepth(Math.max(0,entryY-approachY),doorW)));
     const landingY=doorLandingY(mid,e,map,height);
-    if(entryY-landingY>.45){
+    if(entryY-landingY>STEP_UP){
      const kind=stairKind(b,true),width=Math.max(doorW,stairWidthMin(kind));
      const surface=(x,z)=>standHeight(x,z,map.buildings,height(x,z),map.yards,[],null,map.roads);
      let startY=Math.min(entryY-.28,landingY,approachY);
@@ -961,7 +981,7 @@ export function createWorld(map){
      }
      startY=Math.max(startY,entryY-STOREY);
      const rise=entryY-startY;
-     if(rise>.45&&corridorClearance(mid,e.nx,e.nz,width,Math.min(2.4,approachDepth(rise,doorW)),map.buildings,b.id,map.fences)>0){
+     if(rise>STEP_UP&&corridorClearance(mid,e.nx,e.nz,width,Math.min(2.4,approachDepth(rise,doorW)),map.buildings,b.id,map.fences)>0){
       const spec=layoutStair(rise,kind,width);
       const from={x:mid.x+e.nx*(spec.n*spec.B+.08),z:mid.z+e.nz*(spec.n*spec.B+.08)};
       const footY=Math.min(startY,surface(from.x,from.z),height(from.x,from.z));
@@ -980,10 +1000,15 @@ export function createWorld(map){
     if(onDoor)live=entryY;
     const wallBottom=live-b.base,wallTop=b.height;
     if(live-gnd>.08){
-     const eh=live-gnd,along=tm;
-     const inset=onDoor?thick/2:thick/2+.04;
-     const wx=e.a.x+e.dx*along-e.nx*inset,wz=e.a.z+e.dz*along-e.nz*inset;
-     const g=new T.BoxGeometry(span+.02,eh,onDoor?thick+.06:thick+.1);g.rotateY(yaw);g.translate(wx,gnd+eh/2,wz);earthParts.push(g);
+     const eh=live-gnd,inset=onDoor?thick/2:thick/2+.04;
+     const putEarth=(x0s,x1s)=>{
+      const spanS=x1s-x0s;if(spanS<.06)return;
+      const along=(x0s+x1s)/2/e.len;
+      const wx=e.a.x+e.dx*along-e.nx*inset,wz=e.a.z+e.dz*along-e.nz*inset;
+      const g=new T.BoxGeometry(spanS+.02,eh,onDoor?thick+.06:thick+.1);g.rotateY(yaw);g.translate(wx,gnd+eh/2,wz);earthParts.push(g);
+     };
+     if(onDoor){putEarth(x0,Math.max(x0,doorX));putEarth(Math.min(x1,doorX+doorW),x1);}
+     else putEarth(x0,x1);
     }
     const local=holes.filter(h=>{
      if(h.x>=x1-.01||h.x+h.w<=x0+.01||h.y+h.h<=wallBottom+.05||h.y>=wallTop)return false;
@@ -993,13 +1018,13 @@ export function createWorld(map){
     for(const r of wallRects(span,wallTop-wallBottom,local)){
      const rw=r.x1-r.x0,hh=r.y1-r.y0,along=(x0+(r.x0+r.x1)/2)/e.len;
      const wx=e.a.x+e.dx*along-e.nx*thick/2,wz=e.a.z+e.dz*along-e.nz*thick/2,wy=b.base+wallBottom+r.y0+hh/2;
-     const g=new T.BoxGeometry(rw,hh,thick);g.rotateY(yaw);g.translate(wx,wy,wz);parts.push(g);
+     const g=new T.BoxGeometry(rw,hh,thick);g.rotateY(yaw);g.translate(wx,wy,wz);paintInnerWall(g,-e.nx,-e.nz,wallTints[wallMatIndex]);parts.push(g);
     }
    }
    if(hasDoor){
     const along=(doorX+doorW/2)/e.len;
     const wx=e.a.x+e.dx*along-e.nx*thick/2,wz=e.a.z+e.dz*along-e.nz*thick/2;
-    const sill=new T.BoxGeometry(doorW+.04,.1,thick+.08);sill.rotateY(yaw);sill.translate(wx,entryY+.05,wz);parts.push(sill);
+    const sill=new T.BoxGeometry(doorW+.04,.1,thick+.08);sill.rotateY(yaw);sill.translate(wx,entryY+.05,wz);tintGeom(sill,wallTints[wallMatIndex]);parts.push(sill);
    }
    for(let col=0;col<e.columns;col++){
     const t=(col+.5)/e.columns,x=e.a.x+e.dx*t,z=e.a.z+e.dz*t,ix=x-e.nx*1.25,iz=z-e.nz*1.25;

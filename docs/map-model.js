@@ -58,13 +58,21 @@ function fenceHits(x,z,f,r){
  return false;
 }
 export function blocked(x,z,buildings,r=.55,context){
- const fences=context?.fences||[],trees=context?.trees||[];
+ const fences=context?.fences||[],trees=context?.trees||[],stairs=context?.stairs||[];
  const playerY=context?.y,playerH=context?.h??PLAYER_STAND,playerTop=(playerY??0)+playerH;
  if(buildings.some(b=>{
   if(x<b.minX-r||x>b.maxX+r||z<b.minZ-r||z>b.maxZ+r)return false;
   if(b.doors&&playerY!=null){
    for(const d of b.doors){
-    if(segmentDistance(x,z,d.a,d.b)<(d.thick||.22)+r)return playerY<d.bottom-STEP_UP||playerTop>d.top+.03;
+    const dist=segmentDistance(x,z,d.a,d.b),thick=d.thick||.22;
+    if(dist>=thick+r)continue;
+    if(playerTop>d.top+.03)return true;
+    if(playerY>=d.bottom-STEP_UP)return false;
+    // Sill height only at the leaf. A street flight in front of the door must be
+    // able to lift the player before this check, otherwise a short stair is a wall.
+    if(dist>thick+.18)return false;
+    if(stairs.some(s=>!s.flat&&Math.abs((s.y1??0)-d.bottom)<=.12&&segmentDistance(x,z,s.a,s.b)<=(s.width||1.1)/2+.22&&playerY>=(s.y0??0)-STEP_UP-.05))return false;
+    return true;
    }
   }
   if(b.shell)return b.shell.some(w=>segmentDistance(x,z,w.a,w.b)<(w.thick||.22)+r);
@@ -86,31 +94,36 @@ export function lowHeadroom(x,z,buildings,y,stairs){
  }
  return false;
 }
-function inStairWell(x,z,s,r=.28){
+function inWellHole(x,z,s,r=.06){
  if(!s)return false;
- const half=(s.width||1.1)/2+r;
- if(segmentDistance(x,z,s.a,s.b)<=half)return true;
  const rings=[s.well,...(s.holes||[])].filter(h=>h&&h.length>=3);
  for(const ring of rings){
   if(inside(x,z,ring))return true;
-  if(ring.some((p,i)=>segmentDistance(x,z,p,ring[(i+1)%ring.length])<r))return true;
+  if(r>0&&ring.some((p,i)=>segmentDistance(x,z,p,ring[(i+1)%ring.length])<r))return true;
  }
  return false;
+}
+function onStairRun(x,z,s,extra=.18){
+ if(!s)return false;
+ return segmentDistance(x,z,s.a,s.b)<=(s.width||1.1)/2+extra;
+}
+function inStairWell(x,z,s,r=.28){
+ return onStairRun(x,z,s,r)||inWellHole(x,z,s,r);
 }
 function stairCovers(s,playerY){
  const lo=Math.min(s.wellY0??s.y0,s.y0),hi=Math.max(s.wellY1??s.y1,s.y1);
  return playerY>=lo-.35&&playerY<=hi+.45;
 }
 export function inWellVoid(x,z,stairs,y){
- let inWell=false;
+ let hole=false;
  for(const s of stairs||[]){
-  if(!stairCovers(s,y)||!inStairWell(x,z,s))continue;
-  inWell=true;
-  const half=(s.width||1.1)/2+.24;
-  if(segmentDistance(x,z,s.a,s.b)<=half)return false;
-  if(Math.hypot(x-s.b.x,z-s.b.z)<half+.8&&Math.abs(y-(s.y1??0))<=STEP_UP+.12)return false;
+  if(!stairCovers(s,y))continue;
+  if(onStairRun(x,z,s,.24))return false;
+  if(Math.hypot(x-s.b.x,z-s.b.z)<(s.width||1.1)/2+.7&&Math.abs(y-(s.y1??0))<=STEP_UP+.12)return false;
+  const bottom=Math.min(s.wellY0??s.y0,s.y0);
+  if(inWellHole(x,z,s)&&y>bottom+STEP_UP+.05)hole=true;
  }
- return inWell;
+ return hole;
 }
 export function standHeight(x,z,buildings,groundY,yards,stairs,playerY,roads){
  let y=groundY,stairY=-Infinity,onFlight=false,bestScore=Infinity;
@@ -121,27 +134,31 @@ export function standHeight(x,z,buildings,groundY,yards,stairs,playerY,roads){
   const ring=yard.points,onLot=inside(x,z,ring)||ring.some((p,i)=>segmentDistance(x,z,p,ring[(i+1)%ring.length])<.35);
   if(onLot)y=Math.max(y,yard.top);
  }
+ const hits=[];
  for(const s of stairs||[]){
   const half=(s.width||1.5)/2+.18;
   const onRun=segmentDistance(x,z,s.a,s.b)<=half;
-  const nearTop=Math.hypot(x-s.b.x,z-s.b.z)<half+.85;
+  const nearTop=Math.hypot(x-s.b.x,z-s.b.z)<half+.5;
   if(!onRun&&!(nearTop&&(playerY==null||Math.abs(playerY-s.y1)<=STEP_UP+.2)))continue;
-  const dx=s.b.x-s.a.x,dz=s.b.z-s.a.z,len2=dx*dx+dz*dz||1,run=Math.sqrt(len2);
+  const dx=s.b.x-s.a.x,dz=s.b.z-s.a.z,len2=dx*dx+dz*dz||1;
   const tRaw=((x-s.a.x)*dx+(z-s.a.z)*dz)/len2;
-  if(s.flat||Math.abs((s.y1??0)-(s.y0??0))<.05){
-   const sy=s.y1,score=playerY==null?-sy:Math.abs(sy-playerY);
-   if(score<bestScore){bestScore=score;stairY=sy;onFlight=false;}
-   continue;
-  }
   const t=Math.max(0,Math.min(1,tRaw));
-  const tLand=Math.max(.62,1-Math.min(run*.28,.85)/run);
-  const onLanding=!onRun||t>=tLand||tRaw>=.92||(nearTop&&tRaw>.7)||tRaw>1;
-  const sy=onLanding?s.y1:s.y0+(s.y1-s.y0)*(t/tLand);
-  const score=playerY==null?-sy:Math.abs(sy-playerY);
-  if(score<bestScore){bestScore=score;stairY=sy;onFlight=onRun&&tRaw>.02&&!onLanding;}
+  const flat=!!s.flat||Math.abs((s.y1??0)-(s.y0??0))<.05;
+  const onLanding=flat||!onRun||tRaw>=.98||tRaw>1;
+  const sy=onLanding?s.y1:s.y0+(s.y1-s.y0)*t;
+  hits.push({sy,onRun,flat,flight:onRun&&!flat&&tRaw>-.02&&tRaw<.98});
+ }
+ const climbing=hits.filter(h=>h.onRun&&!h.flat);
+ const pool=climbing.length?climbing:hits;
+ for(const h of pool){
+  if(playerY!=null&&h.sy>playerY+STEP_UP+.02)continue;
+  let score;
+  if(playerY==null)score=-h.sy;
+  else score=-h.sy-(h.flight?.05:0);
+  if(score<bestScore){bestScore=score;stairY=h.sy;onFlight=h.flight;}
  }
  if(stairY>-Infinity)y=Math.max(y,stairY);
- const openWells=(stairs||[]).filter(s=>inStairWell(x,z,s));
+ const openWells=(stairs||[]).filter(s=>inWellHole(x,z,s));
  for(const b of buildings){
   if(b.base==null||x<b.minX||x>b.maxX||z<b.minZ||z>b.maxZ||!inside(x,z,b.points))continue;
   const floors=b.storeys?.length?b.storeys:[b.base];
@@ -166,7 +183,7 @@ export function ceilingAt(x,z,buildings,playerY,stairs){
  if(playerY==null)return null;
  for(const b of buildings){
   if(b.base==null||x<b.minX||x>b.maxX||z<b.minZ||z>b.maxZ||!inside(x,z,b.points))continue;
-  const on=(stairs||[]).find(s=>inStairWell(x,z,s)&&stairCovers(s,playerY));
+  const on=(stairs||[]).find(s=>stairCovers(s,playerY)&&(inWellHole(x,z,s)||onStairRun(x,z,s,.2)));
   const floors=[...new Set(b.storeys||[b.base])].sort((a,c)=>a-c);
   const next=floors.find(f=>f>playerY+STEP_UP+.12);
   if(on){

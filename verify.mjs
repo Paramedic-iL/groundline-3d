@@ -30,6 +30,43 @@ assert(!blocked(gap.x,gap.z,t.buildings,.48,{y:0,h:PLAYER_STAND}),'stand through
 assert(!blocked(insidePt.x,insidePt.z,t.buildings,.48,{y:0,h:PLAYER_STAND}),'enter interior');
 assert(!blocked(gap.x,gap.z,t.buildings,.48,{y:tall.doors[0].bottom-STEP_UP+.03,h:PLAYER_STAND}),'step up through a door');
 assert(blocked(gap.x,gap.z,t.buildings,.48,{y:tall.doors[0].bottom-STEP_UP-.1,h:PLAYER_STAND}),'cannot walk through from below a step');
+{
+ const box={id:'short-approach',points:[{x:0,z:0},{x:12,z:0},{x:12,z:10},{x:0,z:10}],tags:{'building:levels':'2'},area:120,height:6.4,levels:2,verified:true,minX:0,maxX:12,minZ:0,maxZ:10};
+ const house={name:'short-door-stair',real:false,lat:null,lon:null,radius:90,cover:[],fences:[],trees:[],yards:[],stairs:[],spawn:{x:6,z:-8},
+  buildings:[box],
+  roads:[{width:6,points:[{x:-8,z:-5},{x:20,z:-5}],name:'',kind:'residential'}]};
+ const shortMap={...house,terrain:{height:(x,z)=>z<-.05?-0.54:0,real:false,label:'kerb'}};
+ const swDoor=createWorld(shortMap);
+ const door=house.buildings[0].doors[0];
+ assert(door,'kerb house has a door');
+ const approach=(shortMap.stairs||[]).find(s=>!s.flat&&Math.abs((s.y1??0)-door.bottom)<.12&&!inside((s.a.x+s.b.x)/2,(s.a.z+s.b.z)/2,house.buildings[0].points));
+ assert(approach,`street stair climbs to the sill ${door.bottom}`);
+ assert(approach.y1-approach.y0>.45,'sill is reached by stairs, not a single step');
+ const fromStreet={y:approach.y0,h:PLAYER_STAND,stairs:shortMap.stairs,fences:shortMap.fences};
+ for(const t of [0,.25,.5,.75]){
+  const x=approach.a.x+(approach.b.x-approach.a.x)*t,z=approach.a.z+(approach.b.z-approach.a.z)*t;
+  assert(!blocked(x,z,house.buildings,.48,fromStreet),`short street stair t=${t} is not a wall from the street`);
+ }
+ disposeWorld(swDoor.scene);
+}
+{
+ const box={id:'kerb-step',points:[{x:0,z:0},{x:12,z:0},{x:12,z:10},{x:0,z:10}],tags:{'building:levels':'2'},area:120,height:6.4,levels:2,verified:true,minX:0,maxX:12,minZ:0,maxZ:10};
+ const house={name:'kerb-door-stair',real:false,lat:null,lon:null,radius:90,cover:[],fences:[],trees:[],yards:[],stairs:[],spawn:{x:6,z:-8},
+  buildings:[box],
+  roads:[{width:6,points:[{x:-8,z:-5},{x:20,z:-5}],name:'',kind:'residential'}]};
+ const kerbMap={...house,terrain:{height:(x,z)=>z<-.05?-0.435:0,real:false,label:'kerb-lite'}};
+ const kw=createWorld(kerbMap);
+ const door=house.buildings[0].doors[0];
+ const approach=(kerbMap.stairs||[]).find(s=>!s.flat&&Math.abs((s.y1??0)-door.bottom)<.12&&!inside((s.a.x+s.b.x)/2,(s.a.z+s.b.z)/2,house.buildings[0].points));
+ assert(approach,`a ${(-kerbMap.terrain.height(0,-1)).toFixed(3)}m sill gets street stairs, not a dead step`);
+ assert(approach.y1-approach.y0>STEP_UP,'kerb stair is more than a walk-up');
+ const fromStreet={y:approach.y0,h:PLAYER_STAND,stairs:kerbMap.stairs,fences:kerbMap.fences};
+ for(const t of [0,.4,.8]){
+  const x=approach.a.x+(approach.b.x-approach.a.x)*t,z=approach.a.z+(approach.b.z-approach.a.z)*t;
+  assert(!blocked(x,z,house.buildings,.48,fromStreet),`kerb stair t=${t} is walkable from the street`);
+ }
+ disposeWorld(kw.scene);
+}
 const lowGap=doorSample(low,0);
 assert(blocked(lowGap.x,lowGap.z,t.buildings,.48,{y:0,h:PLAYER_STAND}),'standing blocked by low lintel');
 assert(!blocked(lowGap.x,lowGap.z,t.buildings,.4,{y:0,h:PLAYER_CROUCH}),'crouch fits low door');
@@ -45,6 +82,16 @@ function assertFloorLanding(b,stairs,buildings,groundAt,yards){
    assert(top>=s.y1-.08,`top nosing is walkable ${top} vs ${s.y1}`);
    assert(top-s.y1<=STEP_UP+.02,`no jump at the top nosing ${top-s.y1}`);
    const dx=s.b.x-s.a.x,dz=s.b.z-s.a.z,len=Math.hypot(dx,dz)||1,ux=dx/len,uz=dz/len;
+   let y=standHeight(s.a.x,s.a.z,buildings,groundAt(s.a.x,s.a.z),yards,stairs,s.y0);
+   assert(y-s.y0<=STEP_UP+.02,`first tread is a step from the landing ${y-s.y0}`);
+   for(let d=0;d<=len+1.05;d+=.06){
+    const x=s.a.x+ux*d,z=s.a.z+uz*d;
+    if(!inside(x,z,b.points))break;
+    const stand=standHeight(x,z,buildings,groundAt(x,z),yards,stairs,y);
+    assert(stand-y<=STEP_UP+.02,`walk ${d.toFixed(2)}m along the flight rises ${stand-y}`);
+    y=stand;
+   }
+   assert(y>=s.y1-.08,`walk finishes the flight at ${y} vs ${s.y1}`);
    let walkY=s.y1;
    for(const d of [0,.35,.7,1.05]){
     const x=s.b.x+ux*d,z=s.b.z+uz*d;
@@ -139,6 +186,21 @@ function assertFloorLanding(b,stairs,buildings,groundAt,yards){
   prevY=y;
  }
  assertFloorLanding(multi,trainMap.stairs,t.buildings,()=>0,trainMap.yards);
+ {
+  let white=0;
+  tw.scene.traverse(o=>{
+   const c=o.geometry?.attributes?.color;if(!c)return;
+   for(let i=0;i<c.count;i++)if(c.getX(i)>.9&&c.getY(i)>.9&&c.getZ(i)>.9)white++;
+  });
+  assert(white>80,'inside wall faces are white');
+  const d=multi.doors[0],mx=(d.a.x+d.b.x)/2,mz=(d.a.z+d.b.z)/2;
+  let nx=d.b.z-d.a.z,nz=-(d.b.x-d.a.x),nl=Math.hypot(nx,nz)||1;nx/=nl;nz/=nl;
+  if(inside(mx+nx*.4,mz+nz*.4,multi.points)){nx=-nx;nz=-nz;}
+  const storey=multi.storeys.find(s=>s>multi.base+.5)||multi.base+3.2;
+  const caster=new T.Raycaster(new T.Vector3(mx+nx*.05,storey,mz+nz*.05),new T.Vector3(-nx,0,-nz),0,.08);
+  const poke=caster.intersectObjects(tw.walls,false).find(h=>Math.abs(h.face?.normal?.y??0)>.7);
+  assert(!poke,`floor/ceiling does not poke through the façade y=${poke?.point.y}`);
+ }
 }
 disposeWorld(tw.scene);
 const slope={height:(x)=>x*.45,real:false,label:'test slope'};
@@ -162,7 +224,7 @@ for(const b of sloped.buildings){
   const ox=mx+nx*.6,oz=mz+nz*.6;
   assert(d.bottom>=g-.05,`door below ground ${d.bottom} vs ${g} id=${b.id}`);
   assert(d.bottom-g<=3.25,`door ${d.bottom-g}m above ground at ${g}, base ${b.base} storeys ${b.storeys} id=${b.id}`);
-  if(d.bottom-g>.45){
+  if(d.bottom-g>STEP_UP){
    const pad=standHeight(ox,oz,sloped.buildings,slope.height(ox),slopeMap.yards,[]);
    const hasStairs=(slopeMap.stairs||[]).some(s=>Math.abs(s.y1-d.bottom)<.06&&Math.hypot((s.a.x+s.b.x)/2-mx,(s.a.z+s.b.z)/2-mz)<5);
    assert(hasStairs||d.bottom-pad<=STEP_UP+.05,`enter by stairs or filled pad id=${b.id}`);
@@ -226,7 +288,7 @@ const flight=indoor[0];
  }
  assert(indoor.every(s=>(s.n||Math.round((s.y1-s.y0)/s.H))<=16),'indoor flights have at most 16 risers');
  assert(flight.width>=1.1,'interior stairwell is wide enough to walk in top-down');
-  const outdoor=slopeMap.stairs.filter(s=>!s.flat&&!s.well&&s.y1-s.y0>.45&&s.y1-s.y0<3.1&&!sloped.buildings.some(b=>inside((s.a.x+s.b.x)/2,(s.a.z+s.b.z)/2,b.points)));
+  const outdoor=slopeMap.stairs.filter(s=>!s.flat&&!s.well&&s.y1-s.y0>STEP_UP&&s.y1-s.y0<3.1&&!sloped.buildings.some(b=>inside((s.a.x+s.b.x)/2,(s.a.z+s.b.z)/2,b.points)));
   assert(outdoor.length>=1,'street stairs climb to a raised door');
   const doorStair=outdoor[0];
   if(doorStair){
@@ -246,6 +308,8 @@ const flight=indoor[0];
     assert(!blocked(x,z,sloped.buildings,.4,{fences:slopeMap.fences,trees:slopeMap.trees,y,h:PLAYER_STAND}),`street stair is not through a fence t=${u.toFixed(2)}`);
     doorY=y;
    }
+   const midX=doorStair.a.x+(doorStair.b.x-doorStair.a.x)*.35,midZ=doorStair.a.z+(doorStair.b.z-doorStair.a.z)*.35;
+   assert(!blocked(midX,midZ,sloped.buildings,.48,{y:doorStair.y0,h:PLAYER_STAND,stairs:slopeMap.stairs,fences:slopeMap.fences}),'street stair is not a wall from the ground before the sill');
   }
 }
 disposeWorld(sw.scene);
@@ -302,6 +366,52 @@ disposeWorld(sw.scene);
  disposeWorld(hw.scene);
 }
 {
+ const box={id:'324338010',points:[{x:0,z:0},{x:14,z:0},{x:14,z:11},{x:0,z:11}],tags:{'building:levels':'3'},area:154,height:9.6,levels:3,verified:true,minX:0,maxX:14,minZ:0,maxZ:11};
+ const house={name:'U-stair',real:false,lat:null,lon:null,radius:90,cover:[],fences:[],trees:[],yards:[],stairs:[],spawn:{x:20,z:20},
+  buildings:[box],
+  roads:[{width:6,points:[{x:-8,z:-3},{x:24,z:-3}],name:'',kind:'residential'}]};
+ const houseMap={...house,terrain:FLAT};
+ const uw=createWorld(houseMap);
+ const b=house.buildings[0];
+ const floor=b.storeys[0];
+ const soffit=b.storeys[1]-FLOOR_SLAB;
+ let room=0,blockedWalk=0;
+ for(let x=1.2;x<=12.8;x+=.7)for(let z=1.2;z<=9.8;z+=.7){
+  if(!inside(x,z,b.points))continue;
+  let wall=Infinity;
+  for(let i=0;i<b.points.length;i++)wall=Math.min(wall,segmentDistance(x,z,b.points[i],b.points[(i+1)%b.points.length]));
+  if(wall<.7)continue;
+  const onStair=houseMap.stairs.some(s=>segmentDistance(x,z,s.a,s.b)<=(s.width||1.1)/2+.32);
+  const inHole=houseMap.stairs.some(s=>s.well&&s.well.length>=3&&inside(x,z,s.well));
+  room++;
+  const stand=standHeight(x,z,house.buildings,0,houseMap.yards,houseMap.stairs,floor);
+  const voided=inWellVoid(x,z,houseMap.stairs,floor);
+  if(!onStair){
+   assert(!voided,`ground floor beside the U-stair is not a hole at ${x.toFixed(1)},${z.toFixed(1)}`);
+   assert(stand-floor<=STEP_UP+.02,`ground walk is not blocked by an upper landing at ${x.toFixed(1)},${z.toFixed(1)} rise ${stand-floor}`);
+   if(!inHole){
+    const cap=ceilingAt(x,z,house.buildings,floor,houseMap.stairs);
+    assert(cap!=null&&Math.abs(cap-soffit)<.08,`jump beside the stair hits the first-floor soffit, not an open shaft cap=${cap}`);
+   }
+  }
+  if(voided||stand-floor>STEP_UP)blockedWalk++;
+ }
+ assert(room>=40,'U house has a walkable ground floor');
+ assert(blockedWalk<=room*.35,`stair does not wall off the room ${blockedWalk}/${room}`);
+ for(const s of houseMap.stairs.filter(st=>!st.flat&&st.y1-st.y0>.35&&inside((st.a.x+st.b.x)/2,(st.a.z+st.b.z)/2,b.points))){
+  const dx=s.b.x-s.a.x,dz=s.b.z-s.a.z,len=Math.hypot(dx,dz)||1,ux=dx/len,uz=dz/len;
+  let y=standHeight(s.a.x,s.a.z,house.buildings,0,houseMap.yards,houseMap.stairs,s.y0);
+  for(let d=0;d<=len+1.05;d+=.06){
+   const x=s.a.x+ux*d,z=s.a.z+uz*d;
+   const stand=standHeight(x,z,house.buildings,0,houseMap.yards,houseMap.stairs,y);
+   assert(stand-y<=STEP_UP,`U-stair climb does not snap ${d.toFixed(2)}m along ${s.y0.toFixed(2)}→${s.y1.toFixed(2)} rise ${stand-y}`);
+   y=stand;
+  }
+  assert(y>=s.y1-.08,`U-stair finishes at ${y} vs ${s.y1}`);
+ }
+ disposeWorld(uw.scene);
+}
+{
  const box={id:'fenced-front',points:[{x:0,z:0},{x:12,z:0},{x:12,z:10},{x:0,z:10}],tags:{'building:levels':'2'},area:120,height:6.4,levels:2,verified:true,minX:0,maxX:12,minZ:0,maxZ:10};
  const house={name:'fence-door',real:false,lat:null,lon:null,radius:90,cover:[],
   fences:[{id:'south-rail',kind:'fence',width:.08,height:1.15,points:[{x:-2,z:11.2},{x:14,z:11.2}]}],
@@ -351,10 +461,12 @@ assert.throws(()=>parseScale('2:500'));
  const html=fs.readFileSync('dist/index.html','utf8');
  assert(html.includes('id="info-toggle"')&&html.includes('id="data-note"')&&html.includes('hidden'),'Know what’s real is behind the i control');
  assert(html.includes('id="coord-route"')&&html.includes('id="photo-route"')&&html.includes('id="photo-body"'),'coordinates and photo stage are separate boxes');
- assert((html.match(/id="load-map"[\s\S]*?Load area/)||html.includes('id="load-map"'))&&html.includes('id="photo-stage"'),'each route has its own Load area');
+ assert(html.includes('Load and play')&&html.includes('id="load-map"')&&html.includes('id="photo-stage"'),'each route has its own Load and play');
+ assert(!html.includes('Enter sector')&&!html.includes('id="deploy"'),'load starts play without an Enter sector step');
  assert(html.includes('Press ? in game to see the controls.'),'pause points at in-game help');
  assert(!html.includes('W moves toward your aim'),'pause does not dump the control list');
  assert(html.includes('id="load-debug"')&&html.includes('id="summary-toggle"'),'load dump is behind a collapsed Load details control');
+ assert(html.includes('<kbd>G</kbd> Obstacles')&&html.includes('id="debug-legend"'),'G toggles a labelled obstacle overlay');
  const css=fs.readFileSync('dist/style.css','utf8');
  assert(css.includes('body.phone-layout .health-track{width:92px;height:4px'),'mobile health is a thin stripe');
  assert(css.includes('body.phone-layout .bottom-hud .eyebrow'),'mobile HUD hides the HEALTH/weapon labels');

@@ -39,3 +39,7 @@ body.phone-layout #fp-area{height:210px}
 body.phone-layout #close-inset{display:block;min-height:28px;min-width:32px;padding:0 6px;margin-left:8px;font-size:22px;line-height:1;background:transparent;border:0;color:var(--lime)}
 body.phone-layout .fp-head{gap:8px}
 body.phone-layout #heading{margin-left:auto}
+#debug-legend{position:absolute;left:18px;top:92px;z-index:9;display:flex;flex-wrap:wrap;gap:6px 10px;max-width:min(420px,46vw);padding:8px 10px;background:#11191ce8;border:1px solid #6b796c;border-radius:5px;font:11px/1.35 monospace;color:#dce4d5;pointer-events:none}
+#debug-legend[hidden]{display:none!important}
+#debug-legend b{width:100%;color:var(--lime);font-size:11px;letter-spacing:.6px}
+#debug-legend .dbg-orange{color:#ff9a2e}#debug-legend .dbg-red{color:#ff4d3a}#debug-legend .dbg-pink{color:#ff66aa}#debug-legend .dbg-cyan{color:#6ec8ff}#debug-legend .dbg-yellow{color:#e8ef86}#debug-legend .dbg-lime{color:#b8ff5a}
